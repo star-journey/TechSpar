@@ -48,6 +48,11 @@ def _init_llama_settings():
     LlamaSettings.embed_model = get_embedding()
 
 
+def _vector_index_insert_batch_size() -> int:
+    """Return a safe insert batch size for embedding-backed index builds."""
+    return max(1, settings.openai_embedding_max_batch_size)
+
+
 def build_resume_index(user_id: str, force_rebuild: bool = False) -> VectorStoreIndex:
     """Build or load the resume index."""
     cache_key = (user_id, "resume")
@@ -66,7 +71,10 @@ def build_resume_index(user_id: str, force_rebuild: bool = False) -> VectorStore
             input_dir=str(resume_path),
             recursive=True,
         ).load_data()
-        index = VectorStoreIndex.from_documents(docs)
+        index = VectorStoreIndex.from_documents(
+            docs,
+            insert_batch_size=_vector_index_insert_batch_size(),
+        )
         cache_dir.mkdir(parents=True, exist_ok=True)
         index.storage_context.persist(persist_dir=str(cache_dir))
 
@@ -106,7 +114,10 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
         if not docs:
             raise ValueError(f"No documents found in {topic_dir}")
 
-        index = VectorStoreIndex.from_documents(docs)
+        index = VectorStoreIndex.from_documents(
+            docs,
+            insert_batch_size=_vector_index_insert_batch_size(),
+        )
         cache_dir.mkdir(parents=True, exist_ok=True)
         index.storage_context.persist(persist_dir=str(cache_dir))
 
