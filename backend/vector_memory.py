@@ -13,7 +13,7 @@ from datetime import datetime
 import numpy as np
 
 from backend.config import settings
-from backend.llm_provider import get_embedding
+from backend.llm_provider import get_embedding, batched_embed
 
 logger = logging.getLogger("uvicorn")
 
@@ -129,9 +129,8 @@ def index_session_memory(
         return
 
     # Batch embed
-    embed_model = get_embedding()
     texts = [c[1] for c in chunks]
-    vectors = embed_model.get_text_embedding_batch(texts)
+    vectors = batched_embed(texts)
 
     now = datetime.now().isoformat()
     for (chunk_type, content, t, sid, meta), vec in zip(chunks, vectors):
@@ -253,8 +252,7 @@ def find_similar_weak_point(
 
     # Embed any uncached points
     if points_to_embed:
-        embed_model = get_embedding()
-        vecs = embed_model.get_text_embedding_batch(points_to_embed)
+        vecs = batched_embed(points_to_embed)
         for text, vec, idx in zip(points_to_embed, vecs, points_indices):
             vec_np = np.array(vec, dtype=np.float32)
             sim = float(_cosine_similarity(new_vec, vec_np.reshape(1, -1))[0])
@@ -284,13 +282,12 @@ def rebuild_index_from_profile(user_id: str):
         conn.close()
         return
 
-    embed_model = get_embedding()
     texts = [wp["point"] for wp in weak_points if wp.get("point")]
     if not texts:
         conn.close()
         return
 
-    vectors = embed_model.get_text_embedding_batch(texts)
+    vectors = batched_embed(texts)
     now = datetime.now().isoformat()
 
     for text, vec, wp in zip(texts, vectors, weak_points):

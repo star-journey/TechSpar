@@ -132,9 +132,8 @@ def _get_or_compute_embeddings(
 
     # Batch embed missing
     if to_embed:
-        from backend.llm_provider import get_embedding
-        embed_model = get_embedding()
-        vectors = embed_model.get_text_embedding_batch(to_embed)
+        from backend.llm_provider import batched_embed
+        vectors = batched_embed(to_embed)
         now = datetime.now().isoformat()
         for text, vec, idx in zip(to_embed, vectors, to_embed_idx):
             vec_np = np.array(vec, dtype=np.float32)

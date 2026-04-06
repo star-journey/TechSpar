@@ -87,6 +87,25 @@ def get_embedding():
     return _embedding_instance
 
 
+def batched_embed(texts: list[str]) -> list[list[float]]:
+    """Embed a list of texts, splitting into sub-batches to respect API limits.
+
+    Controlled by env var OPENAI_EMBEDDING_MAX_BATCH_SIZE (default 64).
+    """
+    if not texts:
+        return []
+    embed_model = get_embedding()
+    batch_size = settings.openai_embedding_max_batch_size
+    if len(texts) <= batch_size:
+        return embed_model.get_text_embedding_batch(texts)
+    # Split into sub-batches
+    all_vectors: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        chunk = texts[start : start + batch_size]
+        all_vectors.extend(embed_model.get_text_embedding_batch(chunk))
+    return all_vectors
+
+
 def _reset_llama_singleton():
     """Reset LlamaIndex LLM singleton so next call picks up new settings."""
     global _llama_llm_instance

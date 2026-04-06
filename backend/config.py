@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     local_embedding_model: str = ""
     local_embedding_path: str = ""
     embedding_model: str = ""  # deprecated fallback for EMBEDDING_MODEL
+    openai_embedding_max_batch_size: int = 64  # max texts per API call
 
     # DashScope ASR (speech-to-text, batch transcription)
     dashscope_api_key: str = ""
