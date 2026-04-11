@@ -15,35 +15,7 @@ def _get_topic_display(user_id: str) -> dict[str, str]:
     return {k: v["name"] for k, v in load_topics(user_id).items()}
 
 
-def _parse_json_response(content: str) -> dict | list:
-    """Extract JSON from LLM response, handling various formats."""
-    import re
-    content = content.strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-
-    # Extract from markdown code block
-    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", content)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-
-    # Find first [ or { and parse from there
-    for i, c in enumerate(content):
-        if c in ("[", "{"):
-            try:
-                return json.loads(content[i:])
-            except json.JSONDecodeError:
-                pass
-            break
-
-    raise json.JSONDecodeError("No valid JSON found", content, 0)
+from backend.utils import parse_json_response as _parse_json_response  # noqa: E402
 
 
 def _load_high_freq(topic: str, user_id: str) -> str:

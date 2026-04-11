@@ -20,8 +20,17 @@ def sm2_update(sr_state: dict, score_0_10: float) -> dict:
     Returns:
         Updated SR state dict
     """
-    # Map 0-10 to SM-2 quality 0-5
-    quality = min(5, int(score_0_10 / 2))
+    # Map 0-10 to SM-2 quality 0-5 (pass threshold at 5/10)
+    if score_0_10 <= 2:
+        quality = 0
+    elif score_0_10 <= 4:
+        quality = 2
+    elif score_0_10 <= 5:
+        quality = 3
+    elif score_0_10 <= 7:
+        quality = 4
+    else:
+        quality = 5
     ef = sr_state.get("ease_factor", 2.5)
     reps = sr_state.get("repetitions", 0)
 
@@ -76,21 +85,31 @@ def get_due_reviews(user_id: str, topic: str = None) -> list[dict]:
 def update_weak_point_sr(topic: str, point_text: str, score: float, user_id: str):
     """Update spaced repetition state for a specific weak point after evaluation.
 
-    Matches by topic + point text substring.
+    Matches by topic + embedding similarity.
     """
+    from backend.vector_memory import find_similar_weak_point
+
     profile = _load_profile(user_id)
 
-    for wp in profile.get("weak_points", []):
-        if wp.get("improved"):
-            continue
-        if topic and wp.get("topic") != topic:
-            continue
-        # Fuzzy match: point_text is contained in the weak point or vice versa
-        if point_text.lower() in wp["point"].lower() or wp["point"].lower() in point_text.lower():
-            sr = wp.get("sr", {})
-            wp["sr"] = sm2_update(sr, score)
-            _save_profile(profile, user_id)
-            return True
+    # Filter candidates by topic
+    candidates = [
+        (i, wp) for i, wp in enumerate(profile.get("weak_points", []))
+        if not wp.get("improved") and (not topic or wp.get("topic") == topic)
+    ]
+    if not candidates:
+        return False
+
+    # Use vector similarity to find the best match
+    candidate_list = [wp for _, wp in candidates]
+    match_idx = find_similar_weak_point(point_text, candidate_list, user_id=user_id, threshold=0.6)
+    if match_idx is not None:
+        # Map back to original profile index
+        original_idx = candidates[match_idx][0]
+        wp = profile["weak_points"][original_idx]
+        sr = wp.get("sr", {})
+        wp["sr"] = sm2_update(sr, score)
+        _save_profile(profile, user_id)
+        return True
 
     return False
 

@@ -205,35 +205,7 @@ function SectionHeader({ icon, title, caption, action }) {
   );
 }
 
-function TrainingSummaryCard({ label, value, accentClassName, panelClassName }) {
-  return (
-    <div className={cn("flex min-h-[128px] flex-col justify-between rounded-[20px] border border-border/70 p-4 md:min-h-[136px] md:p-5", panelClassName)}>
-        <div className="text-[13px] font-medium text-dim md:text-sm">{label}</div>
-        <div className={cn("text-[32px] font-bold leading-none tracking-tight md:text-[36px]", accentClassName)}>{value}</div>
-    </div>
-  );
-}
-
-function TrainingModeCard({ title, count, avgScore, accentClassName, borderClassName, glowClassName, panelClassName }) {
-  return (
-    <div className={cn("rounded-[20px] border border-border/80 border-l-[4px] p-4 md:p-5", borderClassName, glowClassName, panelClassName)}>
-        <div className={cn("text-[14px] font-semibold md:text-[15px]", accentClassName)}>{title}</div>
-
-        <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-[16px] border border-border/60 bg-border/60 dark:bg-white/[0.06]">
-          <div className="bg-white/70 px-3 py-3 text-center dark:bg-black/[0.08]">
-            <div className={cn("text-[26px] font-bold tracking-tight md:text-[30px]", accentClassName)}>{count}</div>
-            <div className="mt-1 text-[11px] text-dim">次数</div>
-          </div>
-          <div className="bg-white/70 px-3 py-3 text-center dark:bg-black/[0.08]">
-            <div className={cn("text-[26px] font-bold tracking-tight md:text-[30px]", accentClassName)}>
-              {avgScore ?? "-"}
-            </div>
-            <div className="mt-1 text-[11px] text-dim">平均分</div>
-          </div>
-        </div>
-    </div>
-  );
-}
+// Stats components have been refactored into inline elements for a unified dashboard layout
 
 function TopicPriorityCard({ item, onSelect, variant = "default", label }) {
   const featured = variant === "featured";
@@ -510,7 +482,7 @@ function EvidenceTable({ weakItems, strongItems, improvedItems }) {
     <div className="mt-5 space-y-3">
       {/* Filter chips */}
       <div className="flex flex-wrap gap-2">
-        {EVIDENCE_TYPES.map(({ key, label, tone }) => {
+        {EVIDENCE_TYPES.map(({ key, label }) => {
           const active = typeFilter === key;
           const count = key === EVIDENCE_TYPE_ALL ? allItems.length : typeCounts[key];
           return (
@@ -985,34 +957,45 @@ export default function Profile() {
             title="练习统计"
           />
 
-          <div className="mt-4 grid gap-3 xl:grid-cols-2">
-            <TrainingSummaryCard
-              label="总练习次数"
-              value={stats.total_sessions || 0}
-              accentClassName="text-primary"
-              panelClassName="bg-[linear-gradient(135deg,rgba(245,158,11,0.08),rgba(245,158,11,0.02))]"
-            />
-            <TrainingSummaryCard
-              label="综合平均分"
-              value={stats.avg_score ?? "-"}
-              accentClassName="text-green"
-              panelClassName="bg-[linear-gradient(135deg,rgba(34,197,94,0.08),rgba(34,197,94,0.02))]"
-            />
-          </div>
+          <div className="mt-5 grid gap-6 lg:grid-cols-[auto_1px_1fr] items-center rounded-3xl border border-border/60 bg-black/[0.02] dark:bg-white/[0.02] p-5 md:p-6 lg:p-7 shadow-sm">
+            {/* Global Stats */}
+            <div className="flex gap-8 md:gap-14 lg:pl-2">
+              <div className="flex flex-col gap-1.5">
+                 <div className="text-sm font-medium text-dim">总练习次数</div>
+                 <div className="mt-1 flex items-baseline gap-1.5">
+                    <div className="text-4xl font-bold tracking-tight text-primary drop-shadow-sm">{stats.total_sessions || 0}</div>
+                 </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                 <div className="text-sm font-medium text-dim">综合平均分</div>
+                 <div className="mt-1 flex items-baseline gap-1.5">
+                    <div className="text-4xl font-bold tracking-tight text-green drop-shadow-sm">{stats.avg_score ?? "-"}</div>
+                 </div>
+              </div>
+            </div>
 
-          <div className="mt-3 grid gap-3 xl:grid-cols-3">
-            {trainingModeStats.map((item) => (
-              <TrainingModeCard
-                key={item.mode}
-                title={item.title}
-                count={item.count}
-                avgScore={item.avgScore}
-                accentClassName={item.accentClassName}
-                borderClassName={item.borderClassName}
-                glowClassName={item.glowClassName}
-                panelClassName="bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.92))] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.04))]"
-              />
-            ))}
+            {/* Divider */}
+            <div className="h-full w-px bg-border/60 hidden lg:block" />
+
+            {/* Breakdown Stats */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 w-full lg:pl-6">
+              {trainingModeStats.map((item) => (
+                <div key={item.mode} className={cn("flex flex-col rounded-2xl border border-border/80 border-l-[4px] px-4 py-3 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.92))] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.04))]", item.borderClassName, item.glowClassName)}>
+                   <div className={cn("text-xs font-medium md:text-sm", item.accentClassName)}>{item.title}</div>
+                   <div className="mt-2.5 flex items-baseline gap-3">
+                      <div>
+                         <span className={cn("text-xl font-semibold tracking-tight", item.accentClassName)}>{item.count}</span>
+                         <span className="ml-0.5 text-[10px] text-dim">次</span>
+                      </div>
+                      <div className="text-border/60 text-xs">/</div>
+                      <div>
+                         <span className={cn("text-xl font-semibold tracking-tight", item.accentClassName)}>{item.avgScore ?? "-"}</span>
+                         <span className="ml-0.5 text-[10px] text-dim">分</span>
+                      </div>
+                   </div>
+                </div>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>

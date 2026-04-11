@@ -134,46 +134,61 @@ http://localhost
 COPILOT_API_BASE=
 COPILOT_API_KEY=
 COPILOT_MODEL=
-NLS_APPKEY=
-NLS_ACCESS_KEY_ID=
-NLS_ACCESS_KEY_SECRET=
+DASHSCOPE_API_KEY=
 TAVILY_API_KEY=
 ```
 
 这些变量的作用分别是：
 
 * `COPILOT_API_BASE` / `COPILOT_API_KEY` / `COPILOT_MODEL`：给 Copilot 单独指定一套 OpenAI 兼容模型配置。不填时会回退到主 LLM。
-* `NLS_APPKEY` / `NLS_ACCESS_KEY_ID` / `NLS_ACCESS_KEY_SECRET`：给 Copilot 的**实时语音识别**使用。不配时，Copilot 仍可用，但只能手动输入 HR 的问题。
-* `TAVILY_API_KEY`：给 Copilot Prep 阶段的**公司联网搜索**使用。不配时不会整段报废，但公司情报会退化成“跳过联网搜索”。
+* `DASHSCOPE_API_KEY`：给 Copilot 的**实时语音识别**使用（模型 `qwen3-asr-flash-realtime`，走 OpenAI Realtime 兼容 WebSocket 协议，自带服务端 VAD）。同一个 key 也承担"录音上传批量转写"用途。不配时，Copilot 仍可用，但只能手动输入 HR 的问题。
+* `TAVILY_API_KEY`：给 Copilot Prep 阶段的**公司联网搜索**使用。不配时不会整段报废，但公司情报会退化成"跳过联网搜索"。
+
+如果你还想让 Copilot **自动区分 HR 与候选人**（无需手动按钮切换），再补上腾讯云 VPR 声纹识别（可选）：
+
+```env
+TENCENT_SECRET_ID=
+TENCENT_SECRET_KEY=
+TENCENT_VPR_APP_ID=
+```
+
+配好后进入 Copilot 设置页的"声纹识别（可选）"卡片录制 6-15 秒候选人语音完成注册，实时面试就会自动打角色标签。不配置时一切功能照旧，只是角色需要手动切换。
 
 额外注意：
 
-* 启用 `NLS_*` 不只要填环境变量，还要额外安装阿里云 NLS Python SDK。
-* 如果你只是想先用 Copilot，看 JD 分析、匹配分析和策略树，`NLS_*` 和 `TAVILY_API_KEY` 都不是强制项。
+* 如果你只是想先用 Copilot，看 JD 分析、匹配分析和策略树，`DASHSCOPE_API_KEY`、`TAVILY_API_KEY`、`TENCENT_*` 都不是强制项。
 * 这些值怎么申请、控制台里去哪里找，统一看 [外部服务配置](external-services.md)。
 
 ### 7. 录音转写的额外配置
 
-如果你要使用“上传录音 -> 自动转写”这条链路，还需要补齐：
+语音转写现在拆成两条链路，需要配什么取决于你要开哪一条：
+
+**短音频（答题时语音输入、几秒~几分钟）**
+
+只需要 `DASHSCOPE_API_KEY`，不需要任何对象存储。走 DashScope 同步 `chat/completions`，base64 直传。
 
 ```env
 DASHSCOPE_API_KEY=
-QINIU_ACCESS_KEY=
-QINIU_SECRET_KEY=
-QINIU_BUCKET=
-QINIU_DOMAIN=
 ```
 
-这些变量不是可有可无的一半配置，而是同一条链路里的两段能力：
+> 留空时若 `COPILOT_API_KEY` 指向 `https://dashscope.aliyuncs.com/compatible-mode/v1`，会自动复用那个 key，避免一套 DashScope 账号配两次。
 
-* `DASHSCOPE_API_KEY`：阿里云 DashScope 的语音转写能力。
-* `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY`：上传到七牛所需的访问凭证。
-* `QINIU_BUCKET`：目标存储空间。
-* `QINIU_DOMAIN`：七牛对外访问域名。这里应该填完整域名前缀，例如 `https://cdn.example.com`。
+**长音频（录音复盘上传整段面试录音，可能几十分钟）**
 
-当前代码的转写流程是：**先把音频传到七牛拿公网 URL，再把 URL 交给 DashScope 转写**。所以如果你要走“上传录音并自动转写”，`DASHSCOPE_API_KEY` 和整组 `QINIU_*` 都要配置。
+除了上面那个 key，还要补齐阿里云 OSS。走 `qwen3-asr-flash-filetrans` 异步接口，它只接受公网 URL，所以必须先把音频传上 OSS 拿到签名 URL：
 
-如果这些没配，也不影响主要训练流程；录音复盘可以直接粘贴逐字稿文本。
+```env
+ALIYUN_OSS_ACCESS_KEY_ID=
+ALIYUN_OSS_ACCESS_KEY_SECRET=
+ALIYUN_OSS_BUCKET=
+ALIYUN_OSS_ENDPOINT=oss-cn-shanghai.aliyuncs.com
+```
+
+* `ALIYUN_OSS_ACCESS_KEY_ID` / `SECRET`：阿里云 RAM 子账号（或主账号）AK/SK。
+* `ALIYUN_OSS_BUCKET`：目标 OSS 存储桶名。桶**可以保持私有**，代码里用 1 小时过期的签名 URL 让 DashScope 拉文件，无需公开读。
+* `ALIYUN_OSS_ENDPOINT`：桶所在区域的 endpoint，如 `oss-cn-shanghai.aliyuncs.com` / `oss-cn-beijing.aliyuncs.com`。
+
+如果这些都没配，也不影响主要训练流程 —— 录音复盘可以直接粘贴逐字稿文本。
 
 这些值怎么申请、控制台里去哪里找，统一看 [外部服务配置](external-services.md)。
 

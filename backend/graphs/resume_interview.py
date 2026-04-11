@@ -2,10 +2,11 @@
 import json
 import logging
 import re
+import sqlite3
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from backend.models import ResumeInterviewState, InterviewPhase
 from backend.config import settings
@@ -28,6 +29,20 @@ PHASE_ORDER = [
 HARD_MAX_PER_PHASE = 10
 
 _EVAL_PATTERN = re.compile(r"<!--EVAL:(.*?)-->", re.DOTALL)
+
+# Shared SqliteSaver — single long-lived sqlite3 connection across all sessions.
+# State is keyed by thread_id (= session_id), so one DB safely serves all users.
+_CHECKPOINTER: SqliteSaver | None = None
+
+
+def _get_checkpointer() -> SqliteSaver:
+    global _CHECKPOINTER
+    if _CHECKPOINTER is None:
+        path = settings.base_dir / "data" / "langgraph_checkpoints.sqlite"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        _CHECKPOINTER = SqliteSaver(conn)
+    return _CHECKPOINTER
 
 
 def _parse_inline_eval(content: str) -> tuple[str, dict | None]:
@@ -210,6 +225,6 @@ def compile_resume_interview(user_id: str):
     })
 
     return graph.compile(
-        checkpointer=MemorySaver(),
+        checkpointer=_get_checkpointer(),
         interrupt_before=["wait"],
     )

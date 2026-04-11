@@ -31,20 +31,21 @@ class Settings(BaseSettings):
     copilot_model: str = ""
     copilot_temperature: float = 0.3  # Copilot 场景偏确定性
 
-    # Copilot — 阿里云 NLS 实时语音识别
-    nls_url: str = "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1"
-    nls_appkey: str = ""
-    nls_access_key_id: str = ""
-    nls_access_key_secret: str = ""
+    # Copilot — 腾讯云 VPR 声纹识别（可选，未配置时自动回退手动按钮模式）
+    # 允许在用户 settings.json 中覆盖，此处为全局兜底
+    tencent_secret_id: str = ""
+    tencent_secret_key: str = ""
+    tencent_vpr_app_id: str = ""
 
     # Copilot — Tavily Web Search
     tavily_api_key: str = ""
 
-    # Qiniu OSS (for uploading audio to get public URL)
-    qiniu_access_key: str = ""
-    qiniu_secret_key: str = ""
-    qiniu_bucket: str = ""
-    qiniu_domain: str = ""
+    # Alibaba Cloud OSS (only long-audio filetrans needs a public URL;
+    # short audio goes through base64 sync chat/completions, no OSS required).
+    aliyun_oss_access_key_id: str = ""
+    aliyun_oss_access_key_secret: str = ""
+    aliyun_oss_bucket: str = ""
+    aliyun_oss_endpoint: str = ""  # e.g. "oss-cn-shanghai.aliyuncs.com"
 
     # Paths
     base_dir: Path = Path(__file__).resolve().parent.parent
@@ -87,6 +88,20 @@ class Settings(BaseSettings):
 
     def user_settings_path(self, user_id: str) -> Path:
         return self.user_data_dir(user_id) / "settings.json"
+
+    @property
+    def effective_dashscope_api_key(self) -> str:
+        """DashScope API key, with fallback to COPILOT_API_KEY when the Copilot
+        LLM is already pointed at DashScope's OpenAI-compatible endpoint.
+
+        Lets users reuse a single DashScope account key across LLM + ASR
+        without forcing them to duplicate it into two env vars.
+        """
+        if self.dashscope_api_key:
+            return self.dashscope_api_key
+        if self.copilot_api_key and "dashscope.aliyuncs.com" in (self.copilot_api_base or ""):
+            return self.copilot_api_key
+        return ""
 
     def embedding_backend_mode(self) -> str:
         if self.embedding_backend:

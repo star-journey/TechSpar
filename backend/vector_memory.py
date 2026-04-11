@@ -87,7 +87,7 @@ def _cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
 
 
 def _time_decay(created_at: str) -> float:
-    """Exponential time decay. Returns multiplier in [0.5, 1.0] range."""
+    """Exponential time decay. Returns multiplier in [1 - TIME_DECAY_WEIGHT, 1.0] i.e. [0.7, 1.0]."""
     try:
         age = (datetime.now() - datetime.fromisoformat(created_at)).total_seconds() / 86400
     except (ValueError, TypeError):
@@ -263,6 +263,117 @@ def find_similar_weak_point(
     if best_score >= threshold:
         return best_idx
     return None
+
+
+def get_cached_embedding(text: str, chunk_type: str, user_id: str) -> np.ndarray | None:
+    """Look up a cached embedding from the DB. Returns None if not found."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT embedding FROM memory_vectors WHERE chunk_type = ? AND content = ? AND user_id = ? LIMIT 1",
+        (chunk_type, text, user_id),
+    ).fetchone()
+    conn.close()
+    if row:
+        return _deserialize(row["embedding"])
+    return None
+
+
+def cache_embedding(text: str, chunk_type: str, user_id: str, vec: np.ndarray | None = None):
+    """Store an embedding in the DB. Embeds the text if vec is not provided."""
+    if vec is None:
+        vec = _embed(text)
+    conn = _get_conn()
+    blob = _serialize(vec)
+    conn.execute(
+        "INSERT INTO memory_vectors (chunk_type, content, topic, metadata, embedding, user_id, created_at) "
+        "VALUES (?, ?, ?, '{}', ?, ?, ?)",
+        (chunk_type, text, None, blob, user_id, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_cached_embedding(text: str, chunk_type: str, user_id: str):
+    """Remove a cached embedding when an item is evicted."""
+    conn = _get_conn()
+    conn.execute(
+        "DELETE FROM memory_vectors WHERE chunk_type = ? AND content = ? AND user_id = ?",
+        (chunk_type, text, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def find_similar_cached(
+    new_text: str,
+    existing_texts: list[str],
+    chunk_type: str,
+    user_id: str,
+    threshold: float = 0.80,
+) -> bool:
+    """Check if new_text is semantically similar to any existing text, using cached embeddings."""
+    if not existing_texts:
+        return False
+
+    new_vec = get_cached_embedding(new_text, chunk_type, user_id)
+    if new_vec is None:
+        new_vec = _embed(new_text)
+
+    # Collect embeddings for existing items, hitting cache first
+    vecs = []
+    uncached_texts = []
+    uncached_indices = []
+    for i, text in enumerate(existing_texts):
+        cached = get_cached_embedding(text, chunk_type, user_id)
+        if cached is not None:
+            vecs.append(cached)
+        else:
+            uncached_texts.append(text)
+            uncached_indices.append(i)
+            vecs.append(None)  # placeholder
+
+    # Batch embed uncached items and store them
+    if uncached_texts:
+        embed_model = get_embedding()
+        batch_vecs = embed_model.get_text_embedding_batch(uncached_texts)
+        conn = _get_conn()
+        now = datetime.now().isoformat()
+        for text, vec_list, idx in zip(uncached_texts, batch_vecs, uncached_indices):
+            vec_np = np.array(vec_list, dtype=np.float32)
+            vecs[idx] = vec_np
+            blob = _serialize(vec_np)
+            conn.execute(
+                "INSERT INTO memory_vectors (chunk_type, content, topic, metadata, embedding, user_id, created_at) "
+                "VALUES (?, ?, ?, '{}', ?, ?, ?)",
+                (chunk_type, text, None, blob, user_id, now),
+            )
+        conn.commit()
+        conn.close()
+
+    matrix = np.stack(vecs)
+    sims = _cosine_similarity(new_vec, matrix)
+    return float(sims.max()) >= threshold
+
+
+def upsert_weak_point_vector(old_text: str, new_text: str, topic: str | None, user_id: str):
+    """Update a weak point's embedding after its text changes. Avoids full rebuild."""
+    conn = _get_conn()
+    # Remove old entry
+    conn.execute(
+        "DELETE FROM memory_vectors WHERE chunk_type = 'weak_point' AND content = ? AND user_id = ?",
+        (old_text, user_id),
+    )
+    # Insert new entry
+    vec = _embed(new_text)
+    blob = _serialize(vec)
+    meta = json.dumps({"topic": topic or ""})
+    conn.execute(
+        "INSERT INTO memory_vectors (chunk_type, content, topic, metadata, embedding, user_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("weak_point", new_text, topic, meta, blob, user_id, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ── Maintenance ──

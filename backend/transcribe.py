@@ -1,90 +1,167 @@
-"""语音转写模块：七牛云 OSS + DashScope ASR REST API。
+"""语音转写模块：两条独立链路。
 
-流程：上传音频到七牛云 → 获取公网 URL → DashScope qwen3-asr-flash-filetrans 异步转写。
+短音频（几秒~几分钟，≤10MB）：
+    base64 data URI → DashScope qwen3-asr-flash 同步 chat/completions，零 OSS。
+
+长音频（录音复盘，可能几十分钟）：
+    bytes → 阿里云 OSS（signed URL, 1h 过期）→ DashScope qwen3-asr-flash-filetrans 异步 + 轮询。
 """
-import tempfile
-import os
+import base64
 import uuid
 import time
-import json
 import logging
 import requests
 
-from qiniu import Auth as QiniuAuth, put_file
+import oss2
 
 from backend.config import settings
 
 logger = logging.getLogger("uvicorn")
 
+_DASHSCOPE_SYNC = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 _DASHSCOPE_SUBMIT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
 _DASHSCOPE_QUERY = "https://dashscope.aliyuncs.com/api/v1/tasks/"
 
+# DashScope 同步端点限制：单次输入 ≤10MB、时长 ≤5min。
+# base64 会让体积 ×4/3，因此原始音频留 7MB 安全线。
+_SYNC_MAX_RAW_BYTES = 7 * 1024 * 1024
 
-def _upload_to_qiniu(local_path: str, suffix: str) -> str:
-    """Upload file to Qiniu OSS, return public URL."""
-    q = QiniuAuth(settings.qiniu_access_key, settings.qiniu_secret_key)
+_AUDIO_MIME = {
+    ".webm": "audio/webm",
+    ".mp3": "audio/mp3",
+    ".wav": "audio/wav",
+    ".m4a": "audio/m4a",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+}
+
+
+def transcribe_short(audio_bytes: bytes, suffix: str = ".webm") -> str:
+    """短音频同步转写：base64 data URI → DashScope qwen3-asr-flash。
+
+    适用于答题语音输入等 ≤5min / ≤7MB 的短片段，不依赖对象存储。
+    超过限制请走 transcribe_long（长音频 filetrans 链路）。
+    """
+    api_key = settings.effective_dashscope_api_key
+    if not api_key:
+        raise RuntimeError("DASHSCOPE_API_KEY not configured")
+
+    if not audio_bytes:
+        raise RuntimeError("empty audio payload")
+
+    if len(audio_bytes) > _SYNC_MAX_RAW_BYTES:
+        raise RuntimeError(
+            f"audio too large for sync endpoint: {len(audio_bytes)} bytes "
+            f"(limit {_SYNC_MAX_RAW_BYTES}); use transcribe_long instead"
+        )
+
+    mime = _AUDIO_MIME.get(suffix.lower(), "audio/webm")
+    data_uri = f"data:{mime};base64,{base64.b64encode(audio_bytes).decode()}"
+
+    payload = {
+        "model": "qwen3-asr-flash",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": {"data": data_uri}},
+                ],
+            }
+        ],
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    resp = requests.post(_DASHSCOPE_SYNC, headers=headers, json=payload, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"DashScope sync ASR failed [{resp.status_code}]: {resp.text}")
+
+    data = resp.json()
+    try:
+        text = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"DashScope response missing transcript: {e}; body={data}")
+
+    logger.info(f"Sync transcription done: {len(text)} chars")
+    return text
+
+
+def _upload_to_oss(audio_bytes: bytes, suffix: str) -> str:
+    """Upload bytes to Alibaba Cloud OSS, return a signed URL (1h expiry).
+
+    Bucket can stay private — DashScope filetrans pulls via the signature.
+    """
+    missing = [
+        name for name, val in (
+            ("ALIYUN_OSS_ACCESS_KEY_ID", settings.aliyun_oss_access_key_id),
+            ("ALIYUN_OSS_ACCESS_KEY_SECRET", settings.aliyun_oss_access_key_secret),
+            ("ALIYUN_OSS_BUCKET", settings.aliyun_oss_bucket),
+            ("ALIYUN_OSS_ENDPOINT", settings.aliyun_oss_endpoint),
+        ) if not val
+    ]
+    if missing:
+        raise RuntimeError(f"Alibaba OSS not configured: missing {', '.join(missing)}")
+
+    auth = oss2.Auth(settings.aliyun_oss_access_key_id, settings.aliyun_oss_access_key_secret)
+    bucket = oss2.Bucket(auth, settings.aliyun_oss_endpoint, settings.aliyun_oss_bucket)
     key = f"audio/{uuid.uuid4().hex}{suffix}"
-    token = q.upload_token(settings.qiniu_bucket, key, 3600)
 
-    ret, info = put_file(token, key, local_path)
-    if ret is None:
-        raise RuntimeError(f"Qiniu upload failed: {info}")
-
-    url = f"{settings.qiniu_domain}/{ret['key']}"
-    logger.info(f"Uploaded to Qiniu: {url}")
+    bucket.put_object(key, audio_bytes)
+    # slash_safe=True 保留 key 里的 "/"，避免 DashScope 取不到文件
+    url = bucket.sign_url("GET", key, 3600, slash_safe=True)
+    logger.info(f"Uploaded to OSS: {key}")
     return url
 
 
-def transcribe_audio(audio_bytes: bytes, suffix: str = ".webm") -> str:
-    """Transcribe audio: upload to Qiniu → DashScope filetrans REST API."""
-    if not settings.dashscope_api_key:
+def transcribe_long(audio_bytes: bytes, suffix: str = ".webm") -> str:
+    """长音频异步转写：阿里云 OSS → DashScope qwen3-asr-flash-filetrans 轮询。
+
+    给录音复盘场景用，可支持几十分钟~几小时的面试录音。
+    短音频请优先用 transcribe_short（更快、零 OSS 依赖）。
+    """
+    api_key = settings.effective_dashscope_api_key
+    if not api_key:
         raise RuntimeError("DASHSCOPE_API_KEY not configured")
 
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-        f.write(audio_bytes)
-        tmp_path = f.name
+    file_url = _upload_to_oss(audio_bytes, suffix)
 
-    try:
-        # Step 1: Upload to Qiniu
-        file_url = _upload_to_qiniu(tmp_path, suffix)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+    payload = {
+        "model": "qwen3-asr-flash-filetrans",
+        "input": {"file_url": file_url},
+        "parameters": {"channel_id": [0]},
+    }
 
-        # Step 2: Submit DashScope transcription (REST API, file_url 单数)
-        headers = {
-            "Authorization": f"Bearer {settings.dashscope_api_key}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable",
-        }
-        payload = {
-            "model": "qwen3-asr-flash-filetrans",
-            "input": {"file_url": file_url},
-            "parameters": {"channel_id": [0]},
-        }
+    resp = requests.post(_DASHSCOPE_SUBMIT, headers=headers, json=payload)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Transcription submit failed: {resp.text}")
 
-        resp = requests.post(_DASHSCOPE_SUBMIT, headers=headers, json=payload)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Transcription submit failed: {resp.text}")
+    task_id = resp.json()["output"]["task_id"]
+    logger.info(f"Transcription task: {task_id}")
 
-        task_id = resp.json()["output"]["task_id"]
-        logger.info(f"Transcription task: {task_id}")
+    query_headers = {"Authorization": f"Bearer {api_key}"}
+    for _ in range(300):
+        time.sleep(3)
+        qr = requests.get(_DASHSCOPE_QUERY + task_id, headers=query_headers)
+        output = qr.json().get("output", {})
+        status = output.get("task_status", "").upper()
 
-        # Step 3: Poll until completion
-        query_headers = {"Authorization": f"Bearer {settings.dashscope_api_key}"}
-        for _ in range(300):
-            time.sleep(3)
-            qr = requests.get(_DASHSCOPE_QUERY + task_id, headers=query_headers)
-            output = qr.json().get("output", {})
-            status = output.get("task_status", "").upper()
+        if status == "SUCCEEDED":
+            text = _extract_text(output)
+            logger.info(f"Transcription done: {len(text)} chars")
+            return text
+        elif status in ("FAILED", "UNKNOWN"):
+            raise RuntimeError(f"Transcription {status}: {output.get('message', '')}")
 
-            if status == "SUCCEEDED":
-                text = _extract_text(output)
-                logger.info(f"Transcription done: {len(text)} chars")
-                return text
-            elif status in ("FAILED", "UNKNOWN"):
-                raise RuntimeError(f"Transcription {status}: {output.get('message', '')}")
-
-        raise RuntimeError("Transcription timed out")
-    finally:
-        os.unlink(tmp_path)
+    raise RuntimeError("Transcription timed out")
 
 
 def _extract_text(output: dict) -> str:

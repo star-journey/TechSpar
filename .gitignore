@@ -4,6 +4,7 @@
 # Python
 __pycache__/
 *.pyc
+VoiceWings-master/
 
 # Node
 frontend/node_modules/
@@ -22,6 +23,7 @@ data/topics.json
 !data/user_profile/.gitkeep
 !data/high_freq/.gitkeep
 data/interviews.db
+data/langgraph_checkpoints.sqlite
 
 # Generated / cache
 data/.index_cache/

@@ -5,18 +5,28 @@
 - 两阶段提取（Mem0）：Extract → Update，不无脑追加
 - 向量召回（embedding）：语义搜索历史洞察
 """
+import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from backend.config import settings
 from backend.llm_provider import get_langchain_llm
 
 logger = logging.getLogger("uvicorn")
+
+# Per-user locks to prevent concurrent read-modify-write on profile.json
+_profile_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_profile_lock(user_id: str) -> asyncio.Lock:
+    if user_id not in _profile_locks:
+        _profile_locks[user_id] = asyncio.Lock()
+    return _profile_locks[user_id]
 
 # ── Profile Schema ──
 
@@ -224,7 +234,7 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     }
 
 
-def update_profile_realtime(
+async def update_profile_realtime(
     mode: str,
     topic: str | None,
     user_id: str,
@@ -232,53 +242,54 @@ def update_profile_realtime(
     weak_point: str | None = None,
 ):
     """Lightweight per-answer profile update — no LLM call, just save the data."""
-    profile = _load_profile(user_id)
-    now = datetime.now().isoformat()
+    async with _get_profile_lock(user_id):
+        profile = _load_profile(user_id)
+        now = datetime.now().isoformat()
 
-    # Record score
-    if score_entry and score_entry.get("score") is not None:
-        history = profile.setdefault("stats", {}).setdefault("score_history", [])
-        history.append({
-            "date": now[:10],
-            "mode": mode,
-            "topic": topic,
-            "avg_score": score_entry["score"],
-            "question": score_entry.get("question", ""),
-            "assessment": score_entry.get("assessment", ""),
-        })
-        # Rolling average
-        recent = [h["avg_score"] for h in history[-30:] if h.get("avg_score")]
-        if recent:
-            profile["stats"]["avg_score"] = round(sum(recent) / len(recent), 1)
-
-    # Record weak point (semantic matching)
-    if weak_point:
-        from backend.vector_memory import find_similar_weak_point
-        match_idx = find_similar_weak_point(weak_point, profile.get("weak_points", []), user_id=user_id)
-        if match_idx is not None:
-            matched = profile["weak_points"][match_idx]
-            matched["times_seen"] = matched.get("times_seen", 1) + 1
-            matched["last_seen"] = now
-            if matched.get("archived"):
-                matched["archived"] = False
-                matched.pop("archived_at", None)
-                matched.setdefault("history", []).append({"date": now, "event": "unarchived"})
-        else:
-            profile.setdefault("weak_points", []).append({
-                "point": weak_point,
-                "topic": topic or "",
-                "source": "observed",
-                "first_seen": now,
-                "last_seen": now,
-                "times_seen": 1,
-                "improved": False,
+        # Record score
+        if score_entry and score_entry.get("score") is not None:
+            history = profile.setdefault("stats", {}).setdefault("score_history", [])
+            history.append({
+                "date": now[:10],
+                "mode": mode,
+                "topic": topic,
+                "avg_score": score_entry["score"],
+                "question": score_entry.get("question", ""),
+                "assessment": score_entry.get("assessment", ""),
             })
+            # Rolling average
+            recent = [h["avg_score"] for h in history[-30:] if h.get("avg_score")]
+            if recent:
+                profile["stats"]["avg_score"] = round(sum(recent) / len(recent), 1)
 
-    # Track that we have activity (for profile page display)
-    profile.setdefault("stats", {}).setdefault("total_answers", 0)
-    profile["stats"]["total_answers"] = profile["stats"].get("total_answers", 0) + 1
+        # Record weak point (semantic matching)
+        if weak_point:
+            from backend.vector_memory import find_similar_weak_point
+            match_idx = find_similar_weak_point(weak_point, profile.get("weak_points", []), user_id=user_id)
+            if match_idx is not None:
+                matched = profile["weak_points"][match_idx]
+                matched["times_seen"] = matched.get("times_seen", 1) + 1
+                matched["last_seen"] = now
+                if matched.get("archived"):
+                    matched["archived"] = False
+                    matched.pop("archived_at", None)
+                    matched.setdefault("history", []).append({"date": now, "event": "unarchived"})
+            else:
+                profile.setdefault("weak_points", []).append({
+                    "point": weak_point,
+                    "topic": topic or "",
+                    "source": "observed",
+                    "first_seen": now,
+                    "last_seen": now,
+                    "times_seen": 1,
+                    "improved": False,
+                })
 
-    _save_profile(profile, user_id)
+        # Track that we have activity (for profile page display)
+        profile.setdefault("stats", {}).setdefault("total_answers", 0)
+        profile["stats"]["total_answers"] = profile["stats"].get("total_answers", 0) + 1
+
+        _save_profile(profile, user_id)
 
 
 def get_profile_summary(user_id: str) -> str:
@@ -345,31 +356,13 @@ def get_profile_summary_for_drill(user_id: str) -> str:
 
 # ── Mem0-style LLM profile update ──
 
-def _parse_json_safe(content: str) -> dict | list:
-    """Parse JSON from LLM response, handling markdown code blocks."""
-    content = content.strip()
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", content)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-    for i, c in enumerate(content):
-        if c in ("[", "{"):
-            try:
-                return json.loads(content[i:])
-            except json.JSONDecodeError:
-                pass
-            break
-    raise json.JSONDecodeError("No valid JSON found", content, 0)
+from backend.utils import parse_json_response as _parse_json_safe  # noqa: E402
 
 
-def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str):
+def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, user_id: str = ""):
     """Execute LLM-decided ADD/UPDATE/NOOP/IMPROVE operations on profile."""
+    from backend.vector_memory import upsert_weak_point_vector
+
     weak_points = profile.setdefault("weak_points", [])
 
     for op in ops.get("weak_point_ops", []):
@@ -387,9 +380,16 @@ def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str):
             if idx is not None and 0 <= idx < len(weak_points):
                 wp = weak_points[idx]
                 if op.get("new_point") and op["new_point"] != wp.get("point"):
+                    old_text = wp["point"]
                     history = wp.setdefault("history", [])
-                    history.append({"point": wp["point"], "date": wp.get("last_seen", now)})
+                    history.append({"point": old_text, "date": wp.get("last_seen", now)})
                     wp["point"] = op["new_point"]
+                    # Sync vector index with updated text
+                    if user_id:
+                        try:
+                            upsert_weak_point_vector(old_text, op["new_point"], wp.get("topic", topic), user_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to sync vector for updated weak point: {e}")
                 wp["times_seen"] = wp.get("times_seen", 1) + 1
                 wp["last_seen"] = now
                 if wp.get("archived"):
@@ -443,16 +443,29 @@ def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
 
     for sp in new_strong:
         sp_text = sp.get("point", sp) if isinstance(sp, dict) else str(sp)
-        for w in profile.get("weak_points", []):
-            if w.get("topic") == (sp.get("topic") if isinstance(sp, dict) else topic) and not w.get("improved") and not w.get("archived"):
-                w["improved"] = True
-                w["improved_at"] = now
-                break
+        sp_topic = sp.get("topic") if isinstance(sp, dict) else topic
+        # Use embedding similarity to find the weak point this strong point overcomes
+        active_weak = [
+            (i, w) for i, w in enumerate(profile.get("weak_points", []))
+            if w.get("topic") == sp_topic and not w.get("improved") and not w.get("archived")
+        ]
+        if active_weak:
+            from backend.vector_memory import _embed, _cosine_similarity
+            sp_vec = _embed(sp_text)
+            weak_texts = [w["point"] for _, w in active_weak]
+            weak_vecs = np.stack([_embed(t) for t in weak_texts])
+            sims = _cosine_similarity(sp_vec, weak_vecs)
+            best_local = int(np.argmax(sims))
+            if float(sims[best_local]) >= 0.5:
+                _, matched_wp = active_weak[best_local]
+                matched_wp["improved"] = True
+                matched_wp["improved_at"] = now
+
         existing = {s["point"] for s in profile.get("strong_points", [])}
         if sp_text not in existing:
             profile.setdefault("strong_points", []).append({
                 "point": sp_text,
-                "topic": sp.get("topic") if isinstance(sp, dict) else (topic or ""),
+                "topic": sp_topic or "",
                 "first_seen": now,
             })
 
@@ -501,53 +514,46 @@ def _update_mastery(profile: dict, topic: str | None, mastery_data: dict, now: s
 _DEDUP_SIMILARITY_THRESHOLD = 0.80
 
 
-def _is_semantically_duplicate(new_item: str, existing: list[str], threshold: float = _DEDUP_SIMILARITY_THRESHOLD) -> bool:
-    """Check if new_item is semantically similar to any existing item via embedding."""
-    if not existing:
-        return False
-    from backend.vector_memory import _embed, _cosine_similarity
-    import numpy as np
-    new_vec = _embed(new_item)
-    matrix = np.stack([_embed(e) for e in existing])
-    sims = _cosine_similarity(new_vec, matrix)
-    return float(sims.max()) >= threshold
-
-
-def _append_if_novel(items: list[str], new_item: str, limit: int = 8) -> None:
-    """Append new_item only if semantically novel. Drop oldest if over limit."""
+def _append_if_novel(items: list[str], new_item: str, chunk_type: str, user_id: str, limit: int = 8) -> None:
+    """Append new_item only if semantically novel. Uses persistent embedding cache."""
     if new_item in items:
         return
-    if _is_semantically_duplicate(new_item, items):
+    from backend.vector_memory import find_similar_cached, cache_embedding, remove_cached_embedding
+    if find_similar_cached(new_item, items, chunk_type, user_id, threshold=_DEDUP_SIMILARITY_THRESHOLD):
         return
+    # Evict oldest before adding if at limit
+    if len(items) >= limit:
+        evicted = items.pop(0)
+        remove_cached_embedding(evicted, chunk_type, user_id)
     items.append(new_item)
-    if len(items) > limit:
-        items.pop(0)
+    # Cache the new item's embedding
+    cache_embedding(new_item, chunk_type, user_id)
 
 
-def _update_communication(profile: dict, comm: dict):
+def _update_communication(profile: dict, comm: dict, user_id: str):
     """Accumulate communication observations, deduplicate via embedding similarity."""
     if not comm:
         return
     c = profile.setdefault("communication", {})
     if comm.get("style_update"):
         observations = c.setdefault("style_observations", [])
-        _append_if_novel(observations, comm["style_update"], limit=5)
+        _append_if_novel(observations, comm["style_update"], "comm_style", user_id, limit=5)
         c["style"] = observations[-1]
     for habit in comm.get("new_habits", []):
-        _append_if_novel(c.setdefault("habits", []), habit)
+        _append_if_novel(c.setdefault("habits", []), habit, "comm_habit", user_id)
     for sug in comm.get("new_suggestions", []):
-        _append_if_novel(c.setdefault("suggestions", []), sug)
+        _append_if_novel(c.setdefault("suggestions", []), sug, "comm_suggestion", user_id)
 
 
-def _update_thinking_patterns(profile: dict, patterns: dict):
+def _update_thinking_patterns(profile: dict, patterns: dict, user_id: str):
     """Accumulate thinking pattern observations, deduplicate via embedding similarity."""
     if not patterns:
         return
     tp = profile.setdefault("thinking_patterns", {"strengths": [], "gaps": []})
     for s in patterns.get("new_strengths", []):
-        _append_if_novel(tp["strengths"], s)
+        _append_if_novel(tp["strengths"], s, "thinking_strength", user_id)
     for g in patterns.get("new_gaps", []):
-        _append_if_novel(tp["gaps"], g)
+        _append_if_novel(tp["gaps"], g, "thinking_gap", user_id)
 
 
 def _archive_stale_weak_points(profile: dict):
@@ -643,11 +649,11 @@ async def llm_update_profile(
     """Mem0-style profile update: LLM decides ADD/UPDATE/NOOP for each fact."""
     from backend.prompts.interviewer import PROFILE_UPDATE_PROMPT
 
+    # LLM calls happen outside the lock (they're slow and don't touch profile)
     profile = _load_profile(user_id)
-    now = datetime.now().isoformat()
-
-    # ── LLM-based update for weak/strong points ──
     has_new_facts = bool(new_weak_points or new_strong_points)
+    ops = None
+    llm_failed = False
 
     if has_new_facts:
         # Format existing points with indices for LLM reference
@@ -687,22 +693,33 @@ async def llm_update_profile(
 
         try:
             ops = _parse_json_safe(response.content)
-            if isinstance(ops, dict):
-                _apply_memory_ops(profile, ops, topic, now)
-            else:
+            if not isinstance(ops, dict):
                 raise ValueError(f"Expected dict, got {type(ops)}")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.warning(f"Profile update LLM parse failed ({e}), falling back to deterministic")
-            _deterministic_update(profile, new_weak_points, new_strong_points, topic, now, user_id)
+            llm_failed = True
 
-    # ── Deterministic updates for mastery / communication / thinking / stats ──
-    _update_mastery(profile, topic, topic_mastery, now, user_id=user_id)
-    _update_communication(profile, communication)
-    _update_thinking_patterns(profile, thinking_patterns)
-    _update_stats(profile, mode, topic, avg_score, now, answer_count, dimension_scores)
-    _archive_stale_weak_points(profile)
+    # All profile mutations happen under the lock
+    async with _get_profile_lock(user_id):
+        # Re-load fresh profile inside the lock
+        profile = _load_profile(user_id)
+        now = datetime.now().isoformat()
 
-    _save_profile(profile, user_id)
+        if has_new_facts:
+            if ops and not llm_failed:
+                _apply_memory_ops(profile, ops, topic, now, user_id=user_id)
+            else:
+                _deterministic_update(profile, new_weak_points, new_strong_points, topic, now, user_id)
+
+        # ── Deterministic updates for mastery / communication / thinking / stats ──
+        _update_mastery(profile, topic, topic_mastery, now, user_id=user_id)
+        _update_communication(profile, communication, user_id)
+        _update_thinking_patterns(profile, thinking_patterns, user_id)
+        _update_stats(profile, mode, topic, avg_score, now, answer_count, dimension_scores)
+        _archive_stale_weak_points(profile)
+
+        _save_profile(profile, user_id)
+
     _save_insight(mode=mode, topic=topic, summary=session_summary, raw_extraction={
         "weak_points": new_weak_points,
         "strong_points": new_strong_points,
