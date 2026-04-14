@@ -1063,6 +1063,8 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
         asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id))
 
         _task_status[session_id] = {"status": "done", "type": "drill_review"}
+        # Retain session entry until evaluation succeeds so failures can be retried.
+        _drill_sessions.pop(session_id, None)
         logger.info(f"Drill review generated for session {session_id}")
     except Exception as e:
         _task_status[session_id] = {"status": "error", "type": "drill_review"}
@@ -1086,6 +1088,8 @@ def _end_jd_prep_background(session_id, questions, answers, preview, meta, user_
         asyncio.run(_update_job_prep_profile(overall, scores, len(questions), meta, user_id))
 
         _task_status[session_id] = {"status": "done", "type": "jd_review"}
+        # Retain session entry until evaluation succeeds so failures can be retried.
+        _job_prep_sessions.pop(session_id, None)
         logger.info(f"JD prep review generated for session {session_id}")
     except Exception as e:
         _task_status[session_id] = {"status": "error", "type": "jd_review"}
@@ -1099,17 +1103,21 @@ async def end_interview(session_id: str, background_tasks: BackgroundTasks,
     """End interview → start async evaluation + review generation."""
 
     # ── Drill mode ──
+    # Session entry persists across evaluation attempts; background task pops on success.
     if session_id in _drill_sessions:
         entry = _drill_sessions[session_id]
         if entry.get("user_id") != user_id:
             raise HTTPException(403, "Access denied.")
+
+        # Don't re-trigger while a prior evaluation is still running.
+        if _task_status.get(session_id, {}).get("status") == "pending":
+            return {"session_id": session_id, "mode": "topic_drill", "status": "pending"}
 
         topic = entry["topic"]
         questions = entry["questions"]
         answers = body.answers if body and body.answers else []
 
         save_drill_answers(session_id, answers, user_id=user_id)
-        del _drill_sessions[session_id]
 
         _task_status[session_id] = {"status": "pending", "type": "drill_review"}
         background_tasks.add_task(_end_drill_background, session_id, topic, questions, answers, user_id)
@@ -1122,13 +1130,15 @@ async def end_interview(session_id: str, background_tasks: BackgroundTasks,
         if entry.get("user_id") != user_id:
             raise HTTPException(403, "Access denied.")
 
+        if _task_status.get(session_id, {}).get("status") == "pending":
+            return {"session_id": session_id, "mode": InterviewMode.JD_PREP.value, "status": "pending"}
+
         questions = entry["questions"]
         preview = entry["preview"]
         meta = entry["meta"]
         answers = body.answers if body and body.answers else []
 
         save_drill_answers(session_id, answers, user_id=user_id)
-        del _job_prep_sessions[session_id]
 
         _task_status[session_id] = {"status": "pending", "type": "jd_review"}
         background_tasks.add_task(_end_jd_prep_background, session_id, questions, answers, preview, meta, user_id)

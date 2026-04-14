@@ -86,7 +86,11 @@ export default function Interview() {
   };
 
   const handleEndBatch = async () => {
-    if (submitted || submitting) return;
+    if (submitting) return;
+    // Allow retry when the previous background evaluation errored.
+    const priorTask = tasks.find((t) => t.id === sessionId);
+    const isRetry = submitted && priorTask?.status === "error";
+    if (submitted && !isRetry) return;
     setSubmitting(true);
     try {
       const answerList = questions.map((q) => ({
@@ -221,9 +225,16 @@ export default function Interview() {
               : initData.topic && <span className="text-sm text-dim">{initData.topic}</span>}
             <span className="text-[13px] text-dim">{answeredCount}/{totalQ} 已答</span>
           </div>
-          <Button variant="destructive" size="sm" onClick={handleEndBatch} disabled={submitting || submitted}>
-            {submitting ? "评估中..." : finished ? "查看评估" : isJobPrep ? "结束备面" : "结束训练"}
-          </Button>
+          {(() => {
+            const task = tasks.find((t) => t.id === sessionId);
+            const headerTaskError = task?.status === "error";
+            const headerDisabled = submitting || (submitted && !headerTaskError);
+            return (
+              <Button variant="destructive" size="sm" onClick={handleEndBatch} disabled={headerDisabled}>
+                {submitting ? "评估中..." : headerTaskError ? "重新评估" : finished ? "查看评估" : isJobPrep ? "结束备面" : "结束训练"}
+              </Button>
+            );
+          })()}
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 md:py-8 flex flex-col items-center gap-5">
@@ -251,21 +262,33 @@ export default function Interview() {
                     const task = tasks.find((t) => t.id === sessionId);
                     const taskDone = task?.status === "done";
                     const taskError = task?.status === "error";
+                    const canRetry = submitted && taskError;
                     return (
                       <>
                         <Button
                           variant="gradient"
                           size="lg"
                           className="px-10"
-                          onClick={submitted && taskDone ? () => navigate(`/review/${sessionId}`) : !submitted ? handleEndBatch : undefined}
-                          disabled={submitting || (submitted && !taskDone)}
+                          onClick={
+                            submitted && taskDone
+                              ? () => navigate(`/review/${sessionId}`)
+                              : !submitted || canRetry
+                              ? handleEndBatch
+                              : undefined
+                          }
+                          disabled={submitting || (submitted && !taskDone && !taskError)}
                         >
-                          {submitting ? "提交中..." : !submitted ? "提交评估" : taskDone ? "查看复盘" : taskError ? "生成失败" : "复盘生成中..."}
+                          {submitting ? "提交中..." : !submitted ? "提交评估" : taskDone ? "查看复盘" : taskError ? "重新评估" : "复盘生成中..."}
                         </Button>
                         {submitted && !taskDone && !taskError && (
                           <div className="flex items-center gap-2 mt-3 text-[13px] text-dim">
                             <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse-dot" />
                             AI 正在生成复盘报告，请稍候
+                          </div>
+                        )}
+                        {taskError && (
+                          <div className="mt-3 text-[13px] text-red">
+                            评估生成失败，点击上方按钮可重新提交
                           </div>
                         )}
                       </>
