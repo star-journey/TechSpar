@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,62 @@ from backend.config import settings
 from backend.llm_provider import get_langchain_llm
 
 logger = logging.getLogger("uvicorn")
+
+# Strip "(领域：xxx)" suffix that LLM sometimes copies from format hints
+_TOPIC_SUFFIX_RE = re.compile(r'\s*[（(]领域[：:]\s*[^）)]+[）)]\s*$')
+
+PERFORMANCE_DIMENSIONS = {"communication", "reasoning", "narrative", "metacognition"}
+
+
+def _clean_point_text(text: str) -> str:
+    return _TOPIC_SUFFIX_RE.sub('', text).strip()
+
+
+def _get_canonical_topic_keys(user_id: str) -> set[str]:
+    from backend.indexer import load_topics
+    return set(load_topics(user_id).keys())
+
+
+def _normalize_extraction_topics(extraction: dict, canonical: set, fallback_topic: str):
+    """Normalize axis + topic for each weak/strong point.
+
+    - axis=performance → topic must be in PERFORMANCE_DIMENSIONS
+    - axis=knowledge (or missing) → topic must be in canonical drill topics
+    """
+    for item in extraction.get("weak_points", []) + extraction.get("strong_points", []):
+        if not isinstance(item, dict):
+            continue
+        item["point"] = _clean_point_text(item.get("point", ""))
+        axis = item.get("axis", "")
+        topic = item.get("topic", "")
+
+        if axis == "performance":
+            if topic not in PERFORMANCE_DIMENSIONS:
+                item["topic"] = _guess_performance_dimension(topic)
+        else:
+            item["axis"] = "knowledge"
+            if topic in PERFORMANCE_DIMENSIONS:
+                item["axis"] = "performance"
+            elif topic not in canonical:
+                item["topic"] = fallback_topic
+
+
+def _guess_performance_dimension(raw: str) -> str:
+    """Best-effort map of free-form text to a canonical performance dimension."""
+    low = raw.lower()
+    for keyword, dim in [
+        ("表达", "communication"), ("沟通", "communication"), ("口误", "communication"),
+        ("发音", "communication"), ("语速", "communication"), ("communi", "communication"),
+        ("推导", "reasoning"), ("思维", "reasoning"), ("逻辑", "reasoning"),
+        ("reason", "reasoning"), ("分析", "reasoning"),
+        ("叙事", "narrative"), ("项目描述", "narrative"), ("量化", "narrative"),
+        ("STAR", "narrative"), ("narrat", "narrative"),
+        ("元认知", "metacognition"), ("自评", "metacognition"), ("meta", "metacognition"),
+    ]:
+        if keyword in low:
+            return dim
+    return "communication"
+
 
 # Per-user locks to prevent concurrent read-modify-write on profile.json
 _profile_locks: dict[str, asyncio.Lock] = {}
@@ -34,6 +91,9 @@ DEFAULT_PROFILE = {
     "name": "",
     "target_role": "AI 应用开发实习生",
     "updated_at": "",
+
+    # 上次 consolidation 运行时间 (用于节流,避免每次 session 都跑 Stage 3)
+    "last_consolidation_at": "",
 
     # 技术掌握度 (topic → {level: 1-5, notes: str})
     "topic_mastery": {},
@@ -81,16 +141,27 @@ EXTRACT_PROMPT = """你是一个面试教练的分析引擎。根据面试对话
 ## 评分记录（如有）
 {scores}
 
+## 合法领域列表
+{allowed_topics}
+
+## 两条轴
+每个 weak_point / strong_point 必须标注 axis:
+- axis="knowledge": 知识类观察（某个技术点不懂/懂），topic 从「合法领域列表」选
+- axis="performance": 表现类观察（表达、推导、叙事、元认知），topic 从以下四个维度选:
+  communication（表达沟通）/ reasoning（推导思维）/ narrative（叙事项目描述）/ metacognition（元认知）
+
 ## 任务
 分析这次面试，提取以下信息，返回 JSON：
 
 ```json
 {{
     "weak_points": [
-        {{"point": "对 Python GIL 的理解停留在表面", "topic": "python"}}
+        {{"point": "对 Python GIL 的理解停留在表面", "topic": "python", "axis": "knowledge"}},
+        {{"point": "被追问 why 时跳过推导直接给结论", "topic": "reasoning", "axis": "performance"}}
     ],
     "strong_points": [
-        {{"point": "RAG 架构描述清晰，有实战数据支撑", "topic": "rag"}}
+        {{"point": "RAG 架构描述清晰，有实战数据支撑", "topic": "rag", "axis": "knowledge"}},
+        {{"point": "遇到不会的题能坦诚说不确定并尝试推导", "topic": "reasoning", "axis": "performance"}}
     ],
     "topic_mastery": {{
         "python": {{"notes": "基础扎实但高级特性（元类、描述符）薄弱"}}
@@ -125,6 +196,11 @@ EXTRACT_PROMPT = """你是一个面试教练的分析引擎。根据面试对话
 规则：
 - 只提取本次面试中明确暴露的信息，不要猜测
 - 薄弱点要具体，不要泛泛说"XX不好"
+- 每条 weak_point / strong_point 必须带 axis 和 topic
+- axis="knowledge" 时 topic 必须从「合法领域列表」选，禁止自创领域（如 DevOps、System Design）
+- axis="performance" 时 topic 只能是 communication / reasoning / narrative / metacognition 之一
+- 知识类观察不属于任何领域时，使用本次面试的领域 "{topic}"
+- 表达习惯、推导方式、项目描述结构等属于 performance 轴，不要放进 knowledge
 - 如果候选人对某个之前的薄弱点表现出了进步，在 strong_points 里标注
 - topic_mastery 只需提供 notes（一句话描述掌握情况），score 由算法计算，不需要你判断
 - 专项训练模式下 dimension_scores 可省略，只需给 avg_score
@@ -359,18 +435,33 @@ def get_profile_summary_for_drill(user_id: str) -> str:
 from backend.utils import parse_json_response as _parse_json_safe  # noqa: E402
 
 
-def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, user_id: str = ""):
-    """Execute LLM-decided ADD/UPDATE/NOOP/IMPROVE operations on profile."""
+def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, user_id: str = "",
+                      new_weak_points: list | None = None, new_strong_points: list | None = None):
+    """Execute LLM-decided ADD/UPDATE/NOOP/IMPROVE operations on profile.
+
+    Topic for ADD ops comes from Stage 1 extraction (new_weak_points/new_strong_points),
+    not from Stage 2 LLM output, to prevent topic hallucination.
+    """
     from backend.vector_memory import upsert_weak_point_vector
 
     weak_points = profile.setdefault("weak_points", [])
 
-    for op in ops.get("weak_point_ops", []):
+    for i, op in enumerate(ops.get("weak_point_ops", [])):
         action = op.get("action", "NOOP")
         if action == "ADD":
+            # Prefer topic from Stage 1 extraction (already normalized)
+            add_topic = topic or ""
+            if new_weak_points and i < len(new_weak_points):
+                nwp = new_weak_points[i]
+                add_topic = (nwp.get("topic", topic) if isinstance(nwp, dict) else topic) or ""
+            add_axis = "knowledge"
+            if new_weak_points and i < len(new_weak_points):
+                add_axis = (new_weak_points[i].get("axis", "knowledge")
+                            if isinstance(new_weak_points[i], dict) else "knowledge")
             weak_points.append({
-                "point": op["point"],
-                "topic": op.get("topic", topic or ""),
+                "point": _clean_point_text(op["point"]),
+                "topic": add_topic,
+                "axis": add_axis,
                 "source": op.get("source", "observed"),
                 "first_seen": now, "last_seen": now,
                 "times_seen": 1, "improved": False,
@@ -379,15 +470,15 @@ def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, use
             idx = op.get("index")
             if idx is not None and 0 <= idx < len(weak_points):
                 wp = weak_points[idx]
-                if op.get("new_point") and op["new_point"] != wp.get("point"):
+                new_text = _clean_point_text(op.get("new_point", ""))
+                if new_text and new_text != wp.get("point"):
                     old_text = wp["point"]
                     history = wp.setdefault("history", [])
                     history.append({"point": old_text, "date": wp.get("last_seen", now)})
-                    wp["point"] = op["new_point"]
-                    # Sync vector index with updated text
+                    wp["point"] = new_text
                     if user_id:
                         try:
-                            upsert_weak_point_vector(old_text, op["new_point"], wp.get("topic", topic), user_id)
+                            upsert_weak_point_vector(old_text, new_text, wp.get("topic", topic), user_id)
                         except Exception as e:
                             logger.warning(f"Failed to sync vector for updated weak point: {e}")
                 wp["times_seen"] = wp.get("times_seen", 1) + 1
@@ -407,11 +498,20 @@ def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, use
             wp["improved_at"] = now
 
     existing_strong = {s["point"] for s in profile.get("strong_points", [])}
-    for op in ops.get("strong_point_ops", []):
+    for i, op in enumerate(ops.get("strong_point_ops", [])):
         if op.get("action") == "ADD" and op.get("point") and op["point"] not in existing_strong:
+            add_topic = topic or ""
+            if new_strong_points and i < len(new_strong_points):
+                nsp = new_strong_points[i]
+                add_topic = (nsp.get("topic", topic) if isinstance(nsp, dict) else topic) or ""
+            add_axis = "knowledge"
+            if new_strong_points and i < len(new_strong_points):
+                add_axis = (new_strong_points[i].get("axis", "knowledge")
+                            if isinstance(new_strong_points[i], dict) else "knowledge")
             profile.setdefault("strong_points", []).append({
-                "point": op["point"],
-                "topic": op.get("topic", topic or ""),
+                "point": _clean_point_text(op["point"]),
+                "topic": add_topic,
+                "axis": add_axis,
                 "first_seen": now,
             })
 
@@ -422,7 +522,7 @@ def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
     from backend.vector_memory import find_similar_weak_point
 
     for wp in new_weak:
-        point = wp.get("point", wp) if isinstance(wp, dict) else str(wp)
+        point = _clean_point_text(wp.get("point", wp) if isinstance(wp, dict) else str(wp))
         match_idx = find_similar_weak_point(point, profile.get("weak_points", []), user_id=user_id)
         if match_idx is not None:
             matched = profile["weak_points"][match_idx]
@@ -436,6 +536,7 @@ def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
             profile.setdefault("weak_points", []).append({
                 "point": point,
                 "topic": wp.get("topic", topic) if isinstance(wp, dict) else (topic or ""),
+                "axis": wp.get("axis", "knowledge") if isinstance(wp, dict) else "knowledge",
                 "source": wp.get("source", "observed") if isinstance(wp, dict) else "observed",
                 "first_seen": now, "last_seen": now,
                 "times_seen": 1, "improved": False,
@@ -563,10 +664,13 @@ def _archive_stale_weak_points(profile: dict):
     - last_seen > 60 days → archive regardless
     - last_seen > 30 days AND times_seen <= 2 → archive
     - Already improved/archived → skip
+    - source == "consolidated" → skip (refreshed by re-running consolidation, not by time)
     """
     now = datetime.now()
     for wp in profile.get("weak_points", []):
         if wp.get("improved") or wp.get("archived"):
+            continue
+        if wp.get("source") == "consolidated":
             continue
         last_seen_str = wp.get("last_seen", "")
         if not last_seen_str:
@@ -657,26 +761,23 @@ async def llm_update_profile(
 
     if has_new_facts:
         # Format existing points with indices for LLM reference
+        # Topic deliberately excluded — Stage 2 only compares content, not metadata
         existing_weak_lines = []
         for i, wp in enumerate(profile.get("weak_points", [])):
             status = "已改善" if wp.get("improved") else f"出现{wp.get('times_seen', 1)}次"
-            existing_weak_lines.append(
-                f"[{i}] {wp['point']} (领域: {wp.get('topic', '?')}, {status})"
-            )
+            existing_weak_lines.append(f"[{i}] {wp['point']} ({status})")
         existing_strong_lines = []
         for i, sp in enumerate(profile.get("strong_points", [])):
-            existing_strong_lines.append(f"[{i}] {sp['point']} (领域: {sp.get('topic', '?')})")
+            existing_strong_lines.append(f"[{i}] {sp['point']}")
 
         new_weak_lines = []
         for wp in new_weak_points:
             point = wp.get("point", wp) if isinstance(wp, dict) else str(wp)
-            t = wp.get("topic", topic) if isinstance(wp, dict) else topic
-            new_weak_lines.append(f"- {point} (领域: {t})")
+            new_weak_lines.append(f"- {point}")
         new_strong_lines = []
         for sp in new_strong_points:
             point = sp.get("point", sp) if isinstance(sp, dict) else str(sp)
-            t = sp.get("topic", topic) if isinstance(sp, dict) else topic
-            new_strong_lines.append(f"- {point} (领域: {t})")
+            new_strong_lines.append(f"- {point}")
 
         prompt = PROFILE_UPDATE_PROMPT.format(
             existing_weak="\n".join(existing_weak_lines) or "暂无",
@@ -707,7 +808,9 @@ async def llm_update_profile(
 
         if has_new_facts:
             if ops and not llm_failed:
-                _apply_memory_ops(profile, ops, topic, now, user_id=user_id)
+                _apply_memory_ops(profile, ops, topic, now, user_id=user_id,
+                                  new_weak_points=new_weak_points,
+                                  new_strong_points=new_strong_points)
             else:
                 _deterministic_update(profile, new_weak_points, new_strong_points, topic, now, user_id)
 
@@ -736,6 +839,11 @@ async def llm_update_profile(
         user_id=user_id,
     )
 
+    # ── Stage 3: Consolidation (带节流, 失败不阻塞) ──
+    # 从 active observed weak_points 里识别跨领域规律, 输出 source="consolidated" 的条目.
+    # 内部节流: 24h cooldown + 至少 3 条新 wp + 至少 5 条 active wp 才真的跑 LLM.
+    await consolidate_patterns(user_id)
+
 
 async def update_profile_after_interview(
     mode: str,
@@ -747,6 +855,9 @@ async def update_profile_after_interview(
     """Mem0-style two-stage pipeline: Extract → Update."""
     profile = _load_profile(user_id)
     llm = get_langchain_llm()
+
+    canonical = _get_canonical_topic_keys(user_id)
+    allowed_topics_str = "、".join(sorted(canonical)) if canonical else "（暂无）"
 
     # ── Stage 1: Extract insights ──
     transcript_lines = []
@@ -770,6 +881,7 @@ async def update_profile_after_interview(
         topic=topic or "综合",
         transcript="\n".join(transcript_lines),
         scores=score_text or "无",
+        allowed_topics=allowed_topics_str,
     )
 
     response = llm.invoke([
@@ -788,6 +900,8 @@ async def update_profile_after_interview(
     except (json.JSONDecodeError, IndexError):
         extraction = {"session_summary": "提取失败", "weak_points": [], "strong_points": []}
 
+    _normalize_extraction_topics(extraction, canonical, fallback_topic=topic or "")
+
     # ── Stage 2: LLM-based Update (Mem0 style) ──
     await llm_update_profile(
         mode=mode,
@@ -804,3 +918,289 @@ async def update_profile_after_interview(
     )
 
     return extraction
+
+
+# ── Stage 3: Consolidation ──────────────────────────────────────────────────
+# 从扁平的 weak_points 里识别跨领域规律,产出 source="consolidated" 的高层条目。
+# 被整合的原始 wp 会被 archive,reason="superseded_by_consolidation"。
+# 设计要点:
+# - 跨至少 2 个不同 topic 才算合格 pattern (挡住同领域换粒度的假整合)
+# - 失败不影响 Stage 1/2 (整个函数 try/except 包裹)
+# - 节流: 24h + 至少 3 条新 observed wp 才跑一次
+
+CONSOLIDATE_MIN_ACTIVE_WPS = 5       # 活跃 observed wp 少于这个不跑
+CONSOLIDATE_MIN_NEW_WPS = 3          # 距上次 consolidation 新增少于这个不跑
+CONSOLIDATE_COOLDOWN_HOURS = 24      # 两次 consolidation 之间的最小间隔
+CONSOLIDATE_MIN_SUPPORTING = 2       # 一条 pattern 至少需要引用的 wp 数
+CONSOLIDATE_MIN_SPANNING_TOPICS = 2  # 必须跨多少个不同 topic
+CONSOLIDATE_MAX_STATEMENT_LEN = 80   # pattern 描述的字符上限
+
+CONSOLIDATE_PROMPT = """你是面试教练的模式识别引擎。你的任务是从用户的薄弱点观察列表里,
+识别**用户自己可能没意识到的跨领域规律** (pattern)。
+
+## 合格 pattern 的 4 个必要条件
+
+一条 pattern 必须同时满足以下 4 条, 否则视为不合格:
+
+1. **跨至少 2 个不同的领域 (topic)**
+   例: [GIL (python)] + [Transformer 注意力 (llm)] + [B+ 树 (database)]
+       → 跨 3 个领域, 可能是一个真规律
+   反例: [GIL (python)] + [async (python)] + [描述符 (python)]
+       → 全在 python 内, 这只是一个领域的弱点, 不是跨领域规律
+
+2. **比原始观察抽象层次更高**
+   例: 5 条"底层机制讲不清"的具体观察 → 1 条"对底层原理偏表面" (思考方式的倾向)
+   反例: "GIL 不懂" + "async 不懂" → "Python 并发不懂"
+       (这只是换了个粒度, 没有真正抽象, 不合格)
+
+3. **是用户自己不容易察觉的规律**
+   例: "被追问 'why' 时倾向跳过推导过程" (思维模式,用户自己难以看到)
+   反例: "Python 的很多东西不熟" (用户自己都知道, 没价值)
+
+4. **可证伪**
+   pattern 必须是将来能被新观察验证或推翻的具体假设。
+   "你可能有点紧张"这种虚话不算。
+
+## 什么时候不要产出
+
+以下任何一种情况, 请返回 {{"patterns": []}}:
+
+- 观察列表里看不到跨领域的规律
+- 所有观察都集中在 1-2 个具体技术点
+- 你没有高度把握某条 pattern 真的成立
+- 观察之间的联系只是表面相似, 不是结构性共性
+
+**宁可产出 0 个 pattern, 不要产出 1 个错的**。
+编造的 pattern 会被用户标记为不准, 损害系统可信度。
+返回空数组完全不会被惩罚, 乱产出才会被惩罚。
+
+## 输入: 用户当前的活跃薄弱点
+
+{weak_points_formatted}
+
+## 输出格式 (严格 JSON)
+
+{{
+  "patterns": [
+    {{
+      "statement": "一句话规律描述, 不超过 40 字",
+      "supporting_wp_indices": [0, 3, 7],
+      "topic": "cross_cutting 或 meta",
+      "confidence": 0.85,
+      "reasoning": "内部用, 为什么这几条指向同一规律 (不展示给用户)"
+    }}
+  ]
+}}
+
+只输出 JSON, 不要任何其他内容。
+"""
+
+
+def _filter_active_observed_wps(profile: dict) -> list[tuple[int, dict]]:
+    """返回 (原 index, wp) 对的列表, 只包含活跃的 observed 条目.
+
+    原 index 用于 consolidation 写回时精确定位 profile["weak_points"] 里的原条目.
+    """
+    out = []
+    for i, wp in enumerate(profile.get("weak_points", [])):
+        if wp.get("improved") or wp.get("archived"):
+            continue
+        # 只对 observed 的条目做 consolidation, 不整合已整合过的或 JD 预测的
+        if wp.get("source", "observed") != "observed":
+            continue
+        out.append((i, wp))
+    return out
+
+
+def _validate_consolidation_pattern(pattern: dict, active: list[tuple[int, dict]]) -> str | None:
+    """验证一条 LLM 产出的 pattern. 返回 None 表示通过, 否则返回拒绝原因."""
+    idxs = pattern.get("supporting_wp_indices")
+    if not isinstance(idxs, list) or len(idxs) < CONSOLIDATE_MIN_SUPPORTING:
+        return "too_few_supporting"
+
+    # idxs 是"输入给 LLM 时的局部 index",引用的是 active 列表的位置
+    if any(not isinstance(i, int) or i < 0 or i >= len(active) for i in idxs):
+        return "invalid_index"
+
+    # 必须跨至少 2 个 topic
+    topics = {active[i][1].get("topic", "") for i in idxs}
+    topics.discard("")
+    if len(topics) < CONSOLIDATE_MIN_SPANNING_TOPICS:
+        return "not_cross_cutting"
+
+    statement = (pattern.get("statement") or "").strip()
+    if not statement:
+        return "empty_statement"
+    if len(statement) > CONSOLIDATE_MAX_STATEMENT_LEN:
+        return "statement_too_long"
+
+    return None
+
+
+def _apply_consolidation_pattern(profile: dict, pattern: dict, active: list[tuple[int, dict]], now: str):
+    """把一条 pattern 写入 profile: 追加新 consolidated wp + archive 被 supersede 的原条目."""
+    idxs = pattern["supporting_wp_indices"]
+    supporting_pairs = [active[i] for i in idxs]
+    supporting_wps = [wp for _, wp in supporting_pairs]
+
+    new_wp = {
+        "point": pattern["statement"].strip(),
+        "topic": pattern.get("topic") or "cross_cutting",
+        "source": "consolidated",
+        "first_seen": now,
+        "last_seen": now,
+        "times_seen": sum(w.get("times_seen", 1) for w in supporting_wps),
+        "improved": False,
+        "archived": False,
+        "consolidates": [w.get("point", "") for w in supporting_wps],
+        "confidence": float(pattern.get("confidence", 0.7)),
+        "user_acknowledged": False,
+    }
+    profile.setdefault("weak_points", []).append(new_wp)
+
+    # Archive 被 supersede 的原条目 (用原 profile index 精确定位, 防止锁外并发写)
+    all_wps = profile.get("weak_points", [])
+    for orig_idx, wp in supporting_pairs:
+        if orig_idx >= len(all_wps):
+            continue
+        target = all_wps[orig_idx]
+        # 再次确认这条就是我们要改的 (防止锁外并发写把 list 改了)
+        if target.get("point") != wp.get("point"):
+            continue
+        target["archived"] = True
+        target["archived_at"] = now
+        target["archived_reason"] = "superseded_by_consolidation"
+        target.setdefault("history", []).append({
+            "date": now,
+            "event": "archived",
+            "reason": f"superseded by consolidation: {new_wp['point'][:40]}",
+        })
+
+
+def _should_run_consolidation(profile: dict) -> tuple[bool, str]:
+    """检查节流条件. 返回 (是否应该跑, 原因)."""
+    active = _filter_active_observed_wps(profile)
+    if len(active) < CONSOLIDATE_MIN_ACTIVE_WPS:
+        return False, f"too_few_active_wps ({len(active)} < {CONSOLIDATE_MIN_ACTIVE_WPS})"
+
+    last_str = profile.get("last_consolidation_at", "")
+    if last_str:
+        try:
+            last_time = datetime.fromisoformat(last_str)
+            hours_since = (datetime.now() - last_time).total_seconds() / 3600
+            if hours_since < CONSOLIDATE_COOLDOWN_HOURS:
+                return False, f"cooldown (last run {hours_since:.1f}h ago)"
+        except (ValueError, TypeError):
+            pass  # 解析失败就当没跑过
+
+        # 至少 N 条新 observed wp 才值得重跑
+        new_count = 0
+        for _, wp in active:
+            first_seen = wp.get("first_seen", "")
+            try:
+                if datetime.fromisoformat(first_seen) > last_time:
+                    new_count += 1
+            except (ValueError, TypeError):
+                continue
+        if new_count < CONSOLIDATE_MIN_NEW_WPS:
+            return False, f"too_few_new_wps ({new_count} < {CONSOLIDATE_MIN_NEW_WPS})"
+
+    return True, "ok"
+
+
+async def consolidate_patterns(user_id: str) -> dict:
+    """Stage 3: 从 active observed weak_points 里识别跨领域规律.
+
+    带节流: 满足 cooldown + 新观察数量 + 活跃数量三个条件才真的跑 LLM.
+    失败不影响上游 (所有异常在这里被吞).
+
+    Returns:
+        {"ran": bool, "applied": int, "skipped": list, "reason": str}
+    """
+    try:
+        profile = _load_profile(user_id)
+
+        should_run, reason = _should_run_consolidation(profile)
+        if not should_run:
+            return {"ran": False, "applied": 0, "skipped": [], "reason": reason}
+
+        active = _filter_active_observed_wps(profile)
+        formatted = "\n".join(
+            f"[{i}] {wp['point']} (领域: {wp.get('topic', '?')}, 观察 {wp.get('times_seen', 1)} 次)"
+            for i, (_, wp) in enumerate(active)
+        )
+
+        llm = get_langchain_llm()
+        response = llm.invoke([
+            SystemMessage(content="你是面试教练的模式识别引擎。只返回 JSON。宁可不产出,不要编造。"),
+            HumanMessage(content=CONSOLIDATE_PROMPT.format(weak_points_formatted=formatted)),
+        ])
+
+        try:
+            parsed = _parse_json_safe(response.content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Expected dict, got {type(parsed)}")
+            raw_patterns = parsed.get("patterns", []) or []
+            if not isinstance(raw_patterns, list):
+                raise ValueError("patterns is not a list")
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            logger.warning(f"Consolidation parse failed: {e}. Raw: {response.content[:200]}")
+            # 解析失败不更新 last_consolidation_at, 下次 session 会重试
+            return {"ran": False, "applied": 0, "skipped": [], "reason": "llm_parse_failed"}
+
+        # 验证
+        valid_patterns = []
+        skipped = []
+        for p in raw_patterns:
+            if not isinstance(p, dict):
+                skipped.append({"reason": "not_a_dict"})
+                continue
+            rej = _validate_consolidation_pattern(p, active)
+            if rej is None:
+                valid_patterns.append(p)
+            else:
+                skipped.append({"statement": p.get("statement", "?"), "reason": rej})
+
+        # 写入 (在锁内)
+        applied = 0
+        async with _get_profile_lock(user_id):
+            profile = _load_profile(user_id)
+            # 锁内重新过滤 active, 因为 profile 在 LLM 期间可能被并发写
+            active_inside = _filter_active_observed_wps(profile)
+
+            # 重新验证 index 还有效 (active 可能变短了)
+            now = datetime.now().isoformat()
+            for p in valid_patterns:
+                idxs = p["supporting_wp_indices"]
+                if any(i >= len(active_inside) for i in idxs):
+                    skipped.append({"statement": p.get("statement", "?"), "reason": "stale_index_after_reload"})
+                    continue
+                # 还要确认 active 列表的顺序没变 (通过比对 point 文本)
+                ok = True
+                for local_i in idxs:
+                    orig_idx_outside = active[local_i][0]
+                    if orig_idx_outside >= len(profile.get("weak_points", [])):
+                        ok = False
+                        break
+                    if profile["weak_points"][orig_idx_outside].get("point") != active[local_i][1].get("point"):
+                        ok = False
+                        break
+                if not ok:
+                    skipped.append({"statement": p.get("statement", "?"), "reason": "profile_changed_during_llm"})
+                    continue
+
+                _apply_consolidation_pattern(profile, p, active, now)
+                applied += 1
+
+            profile["last_consolidation_at"] = now
+            _save_profile(profile, user_id)
+
+        logger.info(
+            f"Consolidation for user {user_id}: applied={applied}, skipped={len(skipped)}, "
+            f"candidates={len(raw_patterns)}"
+        )
+        return {"ran": True, "applied": applied, "skipped": skipped, "reason": "ok"}
+
+    except Exception as e:
+        logger.warning(f"Consolidation failed for user {user_id}: {type(e).__name__}: {e}")
+        return {"ran": False, "applied": 0, "skipped": [], "reason": f"error: {type(e).__name__}"}
