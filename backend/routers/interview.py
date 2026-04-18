@@ -137,7 +137,7 @@ def job_prep_start(req: JobPrepStartRequest, user_id: str = Depends(get_current_
 
 
 @router.post("/interview/start")
-def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_current_user)):
+async def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_current_user)):
     """Start a new interview session."""
     session_id = str(uuid.uuid4())[:8]
 
@@ -151,7 +151,10 @@ def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_curre
         divergence = req.divergence or user_prefs.divergence
 
         try:
-            questions = generate_drill_questions(
+            # generate_drill_questions is sync + LLM-bound; offload to thread
+            # to avoid blocking the event loop.
+            questions = await asyncio.to_thread(
+                generate_drill_questions,
                 req.topic,
                 user_id,
                 num_questions=num_questions,
@@ -174,7 +177,7 @@ def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_curre
 
         graph = compile_resume_interview(user_id)
         config = {"configurable": {"thread_id": session_id}}
-        result = graph.invoke({}, config)
+        result = await graph.ainvoke({}, config)
 
         ai_message = ""
         for msg in reversed(result["messages"]):
@@ -202,20 +205,20 @@ def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_curre
 
 
 @router.post("/interview/chat")
-def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
+async def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     """Send user answer, get next interviewer response (resume mode only)."""
-    entry = get_or_restore_resume_graph(req.session_id, user_id)
+    entry = await get_or_restore_resume_graph(req.session_id, user_id)
     if entry is None:
         raise HTTPException(404, "Session not found or no recoverable state.")
 
     graph = entry["graph"]
     config = entry["config"]
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if not state.next:
         return {"session_id": req.session_id, "message": "", "is_finished": True}
 
-    graph.update_state(config, {"messages": [HumanMessage(content=req.message)]})
-    result = graph.invoke(None, config)
+    await graph.aupdate_state(config, {"messages": [HumanMessage(content=req.message)]})
+    result = await graph.ainvoke(None, config)
     append_message(req.session_id, "user", req.message, user_id=user_id)
 
     is_finished = False
@@ -241,21 +244,21 @@ def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
 
 @router.post("/interview/chat/stream")
 async def chat_stream(req: ChatRequest, user_id: str = Depends(get_current_user)):
-    """SSE streaming version of /interview/chat."""
-    entry = get_or_restore_resume_graph(req.session_id, user_id)
+    """SSE streaming version of /interview/chat with real token streaming."""
+    entry = await get_or_restore_resume_graph(req.session_id, user_id)
     if entry is None:
         raise HTTPException(404, "Session not found or no recoverable state.")
 
     graph = entry["graph"]
     config = entry["config"]
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if not state.next:
         async def finished_gen():
             yield f"data: {json.dumps({'done': True, 'is_finished': True})}\n\n"
 
         return StreamingResponse(finished_gen(), media_type="text/event-stream")
 
-    graph.update_state(config, {"messages": [HumanMessage(content=req.message)]})
+    await graph.aupdate_state(config, {"messages": [HumanMessage(content=req.message)]})
     append_message(req.session_id, "user", req.message, user_id=user_id)
 
     async def event_generator():
@@ -273,6 +276,8 @@ async def chat_stream(req: ChatRequest, user_id: str = Depends(get_current_user)
                 token = chunk.content
                 pending += token
 
+                # Hide inline <!--EVAL:...--> tags from the client while still
+                # letting the graph persist them in state for scoring.
                 if _EVAL_TAG_PREFIX in pending:
                     start = pending.index(_EVAL_TAG_PREFIX)
                     if _EVAL_TAG_SUFFIX in pending[start:]:
@@ -282,6 +287,7 @@ async def chat_stream(req: ChatRequest, user_id: str = Depends(get_current_user)
                             yield f"data: {json.dumps({'token': before})}\n\n"
                         pending = ""
                 elif pending.endswith(("<", "<!", "<!-", "<!--", "<!--E", "<!--EV", "<!--EVA", "<!--EVAL", "<!--EVAL:")):
+                    # Partial EVAL prefix — hold until we can decide.
                     pass
                 else:
                     full_text += pending
@@ -292,10 +298,11 @@ async def chat_stream(req: ChatRequest, user_id: str = Depends(get_current_user)
                 full_text += pending
                 yield f"data: {json.dumps({'token': pending})}\n\n"
         except Exception as exc:
+            logger.exception("chat/stream astream_events failed")
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
             return
 
-        final_state = graph.get_state(config)
+        final_state = await graph.aget_state(config)
         is_finished = False
         if isinstance(final_state.values, dict):
             is_finished = final_state.values.get("is_finished", False)
@@ -469,7 +476,7 @@ async def end_interview(
 
     graph = entry["graph"]
     config = entry["config"]
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     messages = list(state.values.get("messages", []))
     scores = state.values.get("scores", [])
     weak_points = state.values.get("weak_points", [])

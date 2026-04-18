@@ -15,7 +15,7 @@ _task_status: dict[str, dict] = {}
 _copilot_sessions: dict[str, dict] = {}
 
 
-def get_or_restore_resume_graph(session_id: str, user_id: str) -> dict | None:
+async def get_or_restore_resume_graph(session_id: str, user_id: str) -> dict | None:
     """Return the cached graph entry, or rebuild it from the checkpoint store."""
     from backend.graphs.resume_interview import compile_resume_interview
 
@@ -29,7 +29,7 @@ def get_or_restore_resume_graph(session_id: str, user_id: str) -> dict | None:
 
     graph = compile_resume_interview(user_id)
     config = {"configurable": {"thread_id": session_id}}
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if not state.values:
         return None
 

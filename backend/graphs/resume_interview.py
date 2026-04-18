@@ -1,12 +1,14 @@
 """模式1: 简历模拟面试 LangGraph."""
+import asyncio
 import json
 import logging
 import re
-import sqlite3
+
+import aiosqlite
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from backend.models import ResumeInterviewState, InterviewPhase
 from backend.config import settings
@@ -30,18 +32,31 @@ HARD_MAX_PER_PHASE = 10
 
 _EVAL_PATTERN = re.compile(r"<!--EVAL:(.*?)-->", re.DOTALL)
 
-# Shared SqliteSaver — single long-lived sqlite3 connection across all sessions.
+# Shared AsyncSqliteSaver — single long-lived aiosqlite connection across sessions.
 # State is keyed by thread_id (= session_id), so one DB safely serves all users.
-_CHECKPOINTER: SqliteSaver | None = None
+# Initialized once via init_resume_checkpointer() in the FastAPI lifespan.
+_CHECKPOINTER: AsyncSqliteSaver | None = None
 
 
-def _get_checkpointer() -> SqliteSaver:
+async def init_resume_checkpointer() -> None:
+    """Open the aiosqlite connection and create tables. Call once at startup."""
     global _CHECKPOINTER
+    if _CHECKPOINTER is not None:
+        return
+    path = settings.base_dir / "data" / "langgraph_checkpoints.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+    _CHECKPOINTER = saver
+
+
+def _get_checkpointer() -> AsyncSqliteSaver:
     if _CHECKPOINTER is None:
-        path = settings.base_dir / "data" / "langgraph_checkpoints.sqlite"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), check_same_thread=False)
-        _CHECKPOINTER = SqliteSaver(conn)
+        raise RuntimeError(
+            "Resume checkpointer not initialized. "
+            "init_resume_checkpointer() must run in the FastAPI lifespan."
+        )
     return _CHECKPOINTER
 
 
@@ -65,19 +80,22 @@ def _parse_inline_eval(content: str) -> tuple[str, dict | None]:
 
 def _make_init_interview(user_id: str):
     """Create init_interview node bound to a specific user."""
-    def init_interview(state: ResumeInterviewState) -> dict:
+    async def init_interview(state: ResumeInterviewState) -> dict:
         """Load resume context and prepare the opening."""
-        resume_ctx = query_resume("列出候选人的所有项目经历、技能和教育背景", user_id)
+        resume_ctx = await asyncio.to_thread(
+            query_resume, "列出候选人的所有项目经历、技能和教育背景", user_id
+        )
+        profile_summary = await asyncio.to_thread(get_profile_summary, user_id)
 
         system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
             resume_context=resume_ctx,
             phase=InterviewPhase.GREETING.value,
             asked_questions="无",
-            user_profile=get_profile_summary(user_id),
+            user_profile=profile_summary,
         )
 
         llm = get_langchain_llm()
-        response = llm.invoke([
+        response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content="面试开始，请开场并让候选人做自我介绍。"),
         ])
@@ -96,21 +114,22 @@ def _make_init_interview(user_id: str):
 
 def _make_interviewer_ask(user_id: str):
     """Create interviewer_ask node bound to a specific user."""
-    def interviewer_ask(state: ResumeInterviewState) -> dict:
+    async def interviewer_ask(state: ResumeInterviewState) -> dict:
         """Generate next question based on current phase and conversation."""
         asked = state.get("questions_asked", [])
         asked_str = "\n".join(f"- {q}" for q in asked) if asked else "无"
 
+        profile_summary = await asyncio.to_thread(get_profile_summary, user_id)
         system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
             resume_context=state.get("resume_context", ""),
             phase=state.get("phase", "technical"),
             asked_questions=asked_str,
-            user_profile=get_profile_summary(user_id),
+            user_profile=profile_summary,
         )
 
         llm = get_langchain_llm()
         messages = [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
 
         # Parse and strip inline eval from response
         clean_content, eval_data = _parse_inline_eval(response.content)
