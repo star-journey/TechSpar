@@ -165,6 +165,31 @@ export async function endInterview(sessionId, answers = null) {
   return res.json();
 }
 
+export async function getSessionState(sessionId) {
+  const res = await authFetch(`${API_BASE}/interview/session/${sessionId}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function saveAnswersDraft(sessionId, answers, currentIndex) {
+  const res = await authFetch(`${API_BASE}/interview/session/${sessionId}/answers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answers, current_index: currentIndex }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getInProgressSessions(mode = null) {
+  const params = new URLSearchParams();
+  if (mode) params.set("mode", mode);
+  const qs = params.toString();
+  const res = await authFetch(`${API_BASE}/interview/in-progress${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function getReview(sessionId) {
   const res = await authFetch(`${API_BASE}/interview/review/${sessionId}`);
   if (!res.ok) throw new Error(await res.text());

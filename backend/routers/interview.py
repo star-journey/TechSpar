@@ -8,6 +8,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user
 from backend.graphs.job_prep import (
@@ -34,11 +35,15 @@ from backend.runtime import (
     _graphs,
     _job_prep_sessions,
     _task_status,
+    get_or_restore_batch_session,
     get_or_restore_resume_graph,
 )
 from backend.storage.sessions import (
     append_message,
     create_session,
+    get_session,
+    list_in_progress_sessions,
+    save_answers_draft,
     save_drill_answers,
     save_review,
 )
@@ -423,84 +428,98 @@ async def end_interview(
     body: EndDrillRequest | None = None,
     user_id: str = Depends(get_current_user),
 ):
-    """End interview → start async evaluation + review generation."""
-    if session_id in _drill_sessions:
-        entry = _drill_sessions[session_id]
-        if entry.get("user_id") != user_id:
-            raise HTTPException(403, "Access denied.")
+    """End interview → start async evaluation + review generation.
 
-        if _task_status.get(session_id, {}).get("status") == "pending":
-            return {"session_id": session_id, "mode": "topic_drill", "status": "pending"}
+    Recovers sessions from SQLite when the in-memory cache is cold (e.g. after
+    a server restart or when the submit comes from a different device than
+    where the session started).
+    """
+    # Fast path: evaluation already dispatched for this session and still in
+    # flight / finished. A prior "error" is handled separately below so the
+    # user's retry click can intentionally re-dispatch evaluation.
+    prior = _task_status.get(session_id)
+    prior_status = prior.get("status") if prior else None
+    if prior and prior_status in ("pending", "done"):
+        return {
+            "session_id": session_id,
+            "mode": prior.get("type", "unknown"),
+            "status": prior_status or "pending",
+        }
+    if prior_status == "error":
+        # Intentionally fall through: failed background evaluation may be
+        # retried by reloading the session and dispatching a new task below.
+        pass
+
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+
+    mode = session.get("mode")
+    draft_answers = session.get("answers_draft") or []
+
+    if mode == InterviewMode.TOPIC_DRILL.value:
+        entry = get_or_restore_batch_session(session_id, user_id)
+        if entry is None:
+            raise HTTPException(404, "Session not found.")
 
         topic = entry["topic"]
         questions = entry["questions"]
-        answers = body.answers if body and body.answers else []
+        answers = body.answers if body and body.answers else draft_answers
         save_drill_answers(session_id, answers, user_id=user_id)
 
         _task_status[session_id] = {"status": "pending", "type": "drill_review"}
         background_tasks.add_task(_end_drill_background, session_id, topic, questions, answers, user_id)
         return {"session_id": session_id, "mode": "topic_drill", "status": "pending"}
 
-    if session_id in _job_prep_sessions:
-        entry = _job_prep_sessions[session_id]
-        if entry.get("user_id") != user_id:
-            raise HTTPException(403, "Access denied.")
-
-        if _task_status.get(session_id, {}).get("status") == "pending":
-            return {"session_id": session_id, "mode": InterviewMode.JD_PREP.value, "status": "pending"}
+    if mode == InterviewMode.JD_PREP.value:
+        entry = get_or_restore_batch_session(session_id, user_id)
+        if entry is None:
+            raise HTTPException(404, "Session not found.")
 
         questions = entry["questions"]
         preview = entry["preview"]
         meta = entry["meta"]
-        answers = body.answers if body and body.answers else []
+        answers = body.answers if body and body.answers else draft_answers
         save_drill_answers(session_id, answers, user_id=user_id)
 
         _task_status[session_id] = {"status": "pending", "type": "jd_review"}
         background_tasks.add_task(_end_jd_prep_background, session_id, questions, answers, preview, meta, user_id)
         return {"session_id": session_id, "mode": InterviewMode.JD_PREP.value, "status": "pending"}
 
-    if session_id in _task_status:
-        task_status = _task_status[session_id]
-        return {
-            "session_id": session_id,
-            "mode": task_status.get("type", "unknown"),
-            "status": task_status.get("status", "pending"),
-        }
+    if mode == InterviewMode.RESUME.value:
+        entry = await get_or_restore_resume_graph(session_id, user_id)
+        if entry is None:
+            raise HTTPException(404, "Session not found.")
 
-    if session_id not in _graphs:
-        raise HTTPException(404, "Session not found.")
+        graph = entry["graph"]
+        config = entry["config"]
+        state = await graph.aget_state(config)
+        messages = list(state.values.get("messages", []))
+        scores = state.values.get("scores", [])
+        weak_points = state.values.get("weak_points", [])
+        eval_history = state.values.get("eval_history", [])
+        topic_name = state.values.get("topic_name", entry.get("topic"))
+        resume_mode = entry["mode"]
+        topic = entry.get("topic")
 
-    entry = _graphs[session_id]
-    if entry.get("user_id") != user_id:
-        raise HTTPException(403, "Access denied.")
+        _graphs.pop(session_id, None)
 
-    graph = entry["graph"]
-    config = entry["config"]
-    state = await graph.aget_state(config)
-    messages = list(state.values.get("messages", []))
-    scores = state.values.get("scores", [])
-    weak_points = state.values.get("weak_points", [])
-    eval_history = state.values.get("eval_history", [])
-    topic_name = state.values.get("topic_name", entry.get("topic"))
-    mode = entry["mode"]
-    topic = entry.get("topic")
+        _task_status[session_id] = {"status": "pending", "type": "resume_review"}
+        background_tasks.add_task(
+            _generate_review_background,
+            session_id,
+            resume_mode,
+            topic,
+            messages,
+            scores,
+            weak_points,
+            eval_history,
+            topic_name,
+            user_id,
+        )
+        return {"session_id": session_id, "mode": "resume", "status": "pending"}
 
-    del _graphs[session_id]
-
-    _task_status[session_id] = {"status": "pending", "type": "resume_review"}
-    background_tasks.add_task(
-        _generate_review_background,
-        session_id,
-        mode,
-        topic,
-        messages,
-        scores,
-        weak_points,
-        eval_history,
-        topic_name,
-        user_id,
-    )
-    return {"session_id": session_id, "mode": "resume", "status": "pending"}
+    raise HTTPException(400, f"Unsupported session mode: {mode}")
 
 
 async def _update_drill_profile(topic: str, overall: dict, scores: list, total_questions: int, user_id: str):
@@ -595,3 +614,58 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
     llm = get_langchain_llm()
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"reference_answer": response.content.strip()}
+
+
+@router.get("/interview/in-progress")
+async def list_in_progress(mode: str | None = None, user_id: str = Depends(get_current_user)):
+    """List unfinished sessions so the UI can offer "continue last training"."""
+    items = list_in_progress_sessions(user_id=user_id, mode=mode, limit=10)
+    return {"items": items}
+
+
+@router.get("/interview/session/{session_id}")
+async def get_session_state(session_id: str, user_id: str = Depends(get_current_user)):
+    """Return the full in-progress state so the UI can hydrate on refresh or
+    on a fresh device."""
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+
+    is_finished = bool(session.get("review"))
+    return {
+        "session_id": session_id,
+        "mode": session.get("mode"),
+        "topic": session.get("topic"),
+        "meta": session.get("meta") or {},
+        "questions": session.get("questions") or [],
+        "answers_draft": session.get("answers_draft") or [],
+        "current_index": session.get("current_index") or 0,
+        "transcript": session.get("transcript") or [],
+        "is_finished": is_finished,
+        "created_at": session.get("created_at"),
+        "updated_at": session.get("updated_at"),
+    }
+
+
+class SaveAnswersDraftRequest(BaseModel):
+    answers: list[dict] = Field(default_factory=list)
+    current_index: int = 0
+
+
+@router.put("/interview/session/{session_id}/answers")
+async def put_answers_draft(
+    session_id: str,
+    body: SaveAnswersDraftRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """Autosave batch-mode answers + cursor so progress survives refresh / device switch."""
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+    if session.get("mode") not in (InterviewMode.TOPIC_DRILL.value, InterviewMode.JD_PREP.value):
+        raise HTTPException(400, "Draft answers are only supported for batch modes.")
+    if session.get("review"):
+        raise HTTPException(409, "Session already completed.")
+
+    save_answers_draft(session_id, body.answers, body.current_index, user_id=user_id)
+    return {"ok": True, "current_index": body.current_index, "answer_count": len(body.answers)}

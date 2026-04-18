@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileText, ChevronRight, CalendarDays, UploadCloud, CheckCircle2, Clock, Play } from "lucide-react";
 import { getResumeStatus, uploadResume, startInterview, getHistory } from "../api/interview";
+import ContinueSessionBanner from "../components/ContinueSessionBanner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -114,6 +115,7 @@ export default function ResumeInterview() {
       </div>
 
       {/* 核心动作区域大卡片 */}
+      <ContinueSessionBanner mode="resume" title="继续上次简历面试" />
       <Card className="mb-12 border-border/60 shadow-md bg-card/60 backdrop-blur-sm overflow-hidden rounded-3xl">
         <div className="h-1 bg-gradient-to-r from-primary/30 via-primary to-primary/30 w-full opacity-80" />
         <CardContent className="p-6 md:p-8">

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Target, Play, Layers } from "lucide-react";
 import TopicCard from "../components/TopicCard";
+import ContinueSessionBanner from "../components/ContinueSessionBanner";
 import { getTopics, startInterview } from "../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,8 @@ export default function TopicDrill() {
         <Layers size={20} className="text-primary" />
         <span className="text-[18px] font-bold text-text tracking-wide">部署您的演练战场</span>
       </div>
+
+      <ContinueSessionBanner mode="topic_drill" title="继续上次专项训练" />
 
       {pageLoading ? (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 mb-28">

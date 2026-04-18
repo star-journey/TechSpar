@@ -3,7 +3,13 @@ import { useParams, useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { Check, Minus, Star } from "lucide-react";
 import ChatBubble from "../components/ChatBubble";
-import { sendMessage, sendMessageStream, endInterview } from "../api/interview";
+import {
+  sendMessage,
+  sendMessageStream,
+  endInterview,
+  getSessionState,
+  saveAnswersDraft,
+} from "../api/interview";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import useVoiceInput from "../hooks/useVoiceInput";
 import { cn } from "@/lib/utils";
@@ -20,18 +26,25 @@ export default function Interview() {
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const initData = location.state || {};
-  const isBatchMode = initData.mode === "topic_drill" || initData.mode === "jd_prep";
-  const isJobPrep = initData.mode === "jd_prep";
+  const [initData, setInitData] = useState(() => location.state || null);
+  const [hydrated, setHydrated] = useState(false);
+  const mode = initData?.mode;
+  const isBatchMode = mode === "topic_drill" || mode === "jd_prep";
+  const isJobPrep = mode === "jd_prep";
 
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => {
+    const initMode = location.state?.mode;
+    const isResume = initMode && initMode !== "topic_drill" && initMode !== "jd_prep";
+    const msg = location.state?.message;
+    return isResume && msg ? [{ role: "assistant", content: msg }] : [];
+  });
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [finished, setFinished] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const [progress, setProgress] = useState(initData.progress || "");
+  const [progress, setProgress] = useState(initData?.progress || "");
 
-  const [questions] = useState(initData.questions || []);
+  const [questions, setQuestions] = useState(() => location.state?.questions || []);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [drillInput, setDrillInput] = useState("");
@@ -46,10 +59,60 @@ export default function Interview() {
   });
 
   useEffect(() => {
-    if (!isBatchMode && initData.message) {
-      setMessages([{ role: "assistant", content: initData.message }]);
-    }
-  }, []);
+    let cancelled = false;
+    // When we arrived via navigate(..., { state }) from an entry page, the
+    // local React state already reflects an in-progress session — skip the
+    // hydration overwrites to avoid clobbering in-flight chat / answers.
+    const camePreloaded = !!location.state?.mode;
+
+    (async () => {
+      try {
+        const state = await getSessionState(sessionId);
+        if (cancelled) return;
+
+        if (state.is_finished) {
+          navigate(`/review/${sessionId}`, { replace: true });
+          return;
+        }
+
+        if (camePreloaded) return;
+
+        setInitData((prev) => ({
+          ...(prev || {}),
+          mode: state.mode,
+          topic: state.topic,
+          meta: state.meta,
+          company: state.meta?.company ?? prev?.company,
+          position: state.meta?.position ?? prev?.position,
+          questions: state.questions,
+        }));
+
+        if (state.questions?.length) setQuestions(state.questions);
+
+        if (state.mode === "topic_drill" || state.mode === "jd_prep") {
+          const dict = {};
+          for (const a of state.answers_draft || []) {
+            if (a && a.answer) dict[a.question_id] = a.answer;
+          }
+          setAnswers(dict);
+          setCurrentIndex(Math.min(state.current_index || 0, Math.max((state.questions || []).length - 1, 0)));
+        } else if (state.mode === "resume") {
+          const msgs = (state.transcript || []).map((t) => ({
+            role: t.role,
+            content: t.content,
+          }));
+          if (msgs.length) setMessages(msgs);
+        }
+      } catch (err) {
+        console.warn("Failed to hydrate session state:", err.message);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, navigate, location.state]);
 
   useEffect(() => {
     if (!isBatchMode) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -63,26 +126,44 @@ export default function Interview() {
   const totalQ = questions.length;
   const answeredCount = Object.keys(answers).length;
 
+  const persistDraft = (nextAnswers, nextIndex) => {
+    if (!isBatchMode) return;
+    const payload = questions.map((q) => ({
+      question_id: q.id,
+      answer: nextAnswers[q.id] || "",
+    }));
+    saveAnswersDraft(sessionId, payload, nextIndex).catch((err) => {
+      console.warn("Failed to autosave answers:", err.message);
+    });
+  };
+
   const handleDrillSubmit = () => {
     const text = drillInput.trim();
     if (!text || !currentQ) return;
-    setAnswers((prev) => ({ ...prev, [currentQ.id]: text }));
+    const nextAnswers = { ...answers, [currentQ.id]: text };
+    const nextIndex = currentIndex < totalQ - 1 ? currentIndex + 1 : currentIndex;
+    setAnswers(nextAnswers);
     setDrillInput("");
-    if (currentIndex < totalQ - 1) setCurrentIndex((i) => i + 1);
+    if (currentIndex < totalQ - 1) setCurrentIndex(nextIndex);
     else setFinished(true);
+    persistDraft(nextAnswers, nextIndex);
   };
 
   const handleSkip = () => {
     if (!currentQ) return;
+    const nextIndex = currentIndex < totalQ - 1 ? currentIndex + 1 : currentIndex;
     setDrillInput("");
-    if (currentIndex < totalQ - 1) setCurrentIndex((i) => i + 1);
+    if (currentIndex < totalQ - 1) setCurrentIndex(nextIndex);
     else setFinished(true);
+    persistDraft(answers, nextIndex);
   };
 
   const handlePrev = () => {
     if (currentIndex <= 0) return;
-    setDrillInput(answers[questions[currentIndex - 1]?.id] || "");
-    setCurrentIndex((i) => i - 1);
+    const nextIndex = currentIndex - 1;
+    setDrillInput(answers[questions[nextIndex]?.id] || "");
+    setCurrentIndex(nextIndex);
+    persistDraft(answers, nextIndex);
   };
 
   const handleEndBatch = async () => {
@@ -186,7 +267,7 @@ export default function Interview() {
 
   const modeBadge = isJobPrep
     ? { text: "JD 备面", variant: "blue" }
-    : initData.mode === "topic_drill"
+    : mode === "topic_drill"
       ? { text: "专项训练", variant: "success" }
       : { text: "简历面试", variant: "default" };
 
@@ -210,6 +291,22 @@ export default function Interview() {
     </button>
   );
 
+  if (!hydrated && !mode) {
+    return (
+      <div className="flex-1 flex flex-col h-full">
+        <div className="flex items-center justify-between px-4 py-3 md:px-6 border-b border-border bg-card">
+          <Skeleton className="h-6 w-32" />
+          <Skeleton className="h-8 w-24 rounded-md" />
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 md:py-8 flex flex-col items-center gap-5">
+          <Skeleton className="h-2 w-[720px] max-w-full rounded-full" />
+          <Skeleton className="h-[220px] w-[720px] max-w-full rounded-2xl" />
+          <Skeleton className="h-[120px] w-[720px] max-w-full rounded-xl" />
+        </div>
+      </div>
+    );
+  }
+
   if (isBatchMode) {
     return (
       <div className="flex-1 flex flex-col h-full">
@@ -219,10 +316,10 @@ export default function Interview() {
             {isJobPrep
               ? (
                 <span className="text-sm text-dim">
-                  {initData.company ? `${initData.company} · ` : ""}{initData.position || "目标岗位"}
+                  {initData?.company ? `${initData.company} · ` : ""}{initData?.position || "目标岗位"}
                 </span>
               )
-              : initData.topic && <span className="text-sm text-dim">{initData.topic}</span>}
+              : initData?.topic && <span className="text-sm text-dim">{initData.topic}</span>}
             <span className="text-[13px] text-dim">{answeredCount}/{totalQ} 已答</span>
           </div>
           {(() => {
@@ -399,7 +496,7 @@ export default function Interview() {
       <div className="flex items-center justify-between px-4 py-3 md:px-6 border-b border-border bg-card">
         <div className="flex items-center gap-2 md:gap-3 flex-wrap">
           <Badge variant={modeBadge.variant}>{modeBadge.text}</Badge>
-          {initData.topic && <span className="text-sm text-dim">{initData.topic}</span>}
+          {initData?.topic && <span className="text-sm text-dim">{initData.topic}</span>}
           {progress && (
             <span className="text-[13px] text-dim flex items-center gap-1.5">
               <span className="text-border">|</span>

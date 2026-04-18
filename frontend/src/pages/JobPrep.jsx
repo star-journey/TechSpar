@@ -10,6 +10,7 @@ import {
   Target,
 } from "lucide-react";
 import { getResumeStatus, previewJobPrep, startJobPrep } from "../api/interview";
+import ContinueSessionBanner from "../components/ContinueSessionBanner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,6 +124,7 @@ export default function JobPrep() {
 
   return (
     <div className={PAGE_CLASS}>
+      <ContinueSessionBanner mode="jd_prep" title="继续上次 JD 备面" />
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_380px] 2xl:grid-cols-[minmax(0,1.65fr)_400px]">
         <div className="space-y-5">
           <Card className="overflow-hidden border-border/80 bg-card/76">

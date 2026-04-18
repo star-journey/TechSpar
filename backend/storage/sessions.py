@@ -2,7 +2,6 @@
 import json
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 from backend.config import settings
 
@@ -25,17 +24,26 @@ def _get_conn() -> sqlite3.Connection:
             weak_points TEXT DEFAULT '[]',
             overall TEXT DEFAULT '{}',
             review TEXT,
+            answers_draft TEXT DEFAULT '[]',
+            current_index INTEGER DEFAULT 0,
             user_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     # Migrate: add columns if missing (existing DBs)
-    for col, default in [("questions", "'[]'"), ("overall", "'{}'"), ("user_id", "NULL"), ("meta", "'{}'")]:
+    for col, col_type, default in [
+        ("questions", "TEXT", "'[]'"),
+        ("overall", "TEXT", "'{}'"),
+        ("user_id", "TEXT", "NULL"),
+        ("meta", "TEXT", "'{}'"),
+        ("answers_draft", "TEXT", "'[]'"),
+        ("current_index", "INTEGER", "0"),
+    ]:
         try:
             conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
         except sqlite3.OperationalError:
-            conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT DEFAULT {default}")
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type} DEFAULT {default}")
     conn.commit()
     return conn
 
@@ -136,7 +144,67 @@ def get_session(session_id: str, *, user_id: str) -> dict | None:
     result["scores"] = json.loads(result["scores"])
     result["weak_points"] = json.loads(result["weak_points"])
     result["overall"] = json.loads(result.get("overall", "{}") or "{}")
+    result["answers_draft"] = json.loads(result.get("answers_draft", "[]") or "[]")
+    result["current_index"] = int(result.get("current_index") or 0)
     return result
+
+
+def save_answers_draft(session_id: str, answers: list[dict], current_index: int, *, user_id: str) -> bool:
+    """Persist in-progress answers + cursor for batch-mode sessions."""
+    conn = _get_conn()
+    cursor = conn.execute(
+        "UPDATE sessions SET answers_draft = ?, current_index = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE session_id = ? AND user_id = ?",
+        (
+            json.dumps(answers or [], ensure_ascii=False),
+            int(current_index or 0),
+            session_id,
+            user_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def list_in_progress_sessions(*, user_id: str, mode: str | None = None, limit: int = 10) -> list[dict]:
+    """Sessions still awaiting evaluation (no review yet), newest first."""
+    conn = _get_conn()
+    where = ["review IS NULL", "user_id = ?"]
+    params: list = [user_id]
+    if mode:
+        where.append("mode = ?")
+        params.append(mode)
+    where_sql = " AND ".join(where)
+    rows = conn.execute(
+        f"SELECT session_id, mode, topic, meta, questions, answers_draft, current_index, "
+        f"transcript, created_at, updated_at FROM sessions WHERE {where_sql} "
+        f"ORDER BY updated_at DESC LIMIT ?",
+        params + [limit],
+    ).fetchall()
+    conn.close()
+
+    items = []
+    for r in rows:
+        questions = json.loads(r["questions"] or "[]")
+        answers_draft = json.loads(r["answers_draft"] or "[]")
+        transcript = json.loads(r["transcript"] or "[]")
+        answered_count = sum(1 for a in answers_draft if a.get("answer") is not None)
+        if r["mode"] == "resume":
+            # Resume mode uses chat turns, not draft answers — count user messages.
+            answered_count = sum(1 for m in transcript if m.get("role") == "user")
+        items.append({
+            "session_id": r["session_id"],
+            "mode": r["mode"],
+            "topic": r["topic"],
+            "meta": json.loads(r["meta"] or "{}"),
+            "questions_count": len(questions),
+            "answered_count": answered_count,
+            "current_index": int(r["current_index"] or 0),
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        })
+    return items
 
 
 def list_sessions_by_topic(topic: str, *, user_id: str, limit: int = 50) -> list[dict]:
