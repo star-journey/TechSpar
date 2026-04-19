@@ -40,6 +40,8 @@ from backend.runtime import (
 )
 from backend.storage.sessions import (
     append_message,
+    append_reference_answer,
+    bulk_set_reference_answers,
     create_session,
     get_session,
     list_in_progress_sessions,
@@ -368,13 +370,27 @@ def _generate_review_background(
 def _end_drill_background(session_id, topic, questions, answers, user_id):
     """Background task: evaluate drill answers + update profile."""
     try:
-        eval_result = evaluate_drill_answers(topic, questions, answers, user_id)
+        prefs = load_user_settings(user_id)
+        include_refs = getattr(prefs, "generate_reference_answers_on_submit", False)
+        eval_result = evaluate_drill_answers(
+            topic, questions, answers, user_id,
+            include_reference_answer=include_refs,
+        )
         scores = eval_result.get("scores", [])
         overall = eval_result.get("overall", {})
 
         q_diff = {question["id"]: question.get("difficulty", 3) for question in questions}
         for score in scores:
             score.setdefault("difficulty", q_diff.get(score.get("question_id"), 3))
+
+        if include_refs:
+            ref_map = {}
+            for score in scores:
+                content = score.pop("reference_answer", None)
+                if content and score.get("question_id") is not None:
+                    ref_map[score["question_id"]] = content
+            if ref_map:
+                bulk_set_reference_answers(session_id, ref_map, user_id=user_id)
 
         review = format_drill_review(questions, answers, scores, overall)
         save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
@@ -588,14 +604,12 @@ async def _update_job_prep_profile(overall: dict, scores: list, total_questions:
     )
 
 
-@router.post("/interview/reference-answer")
-async def generate_reference_answer(body: dict, user_id: str = Depends(get_current_user)):
-    """Generate a reference answer for a specific question using LLM + knowledge base."""
-    topic = body.get("topic", "").strip()
-    question = body.get("question", "").strip()
-    if not topic or not question:
-        raise HTTPException(400, "topic and question are required")
+class ReferenceAnswerRequest(BaseModel):
+    session_id: str
+    question_id: int
 
+
+def _generate_single_reference_answer(topic: str, question: str, user_id: str) -> str:
     from backend.indexer import retrieve_topic_context
     from backend.llm_provider import get_langchain_llm
     from backend.prompts.interviewer import REFERENCE_ANSWER_PROMPT
@@ -610,10 +624,37 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
         question=question,
         knowledge_context=knowledge_context,
     )
-
     llm = get_langchain_llm()
     response = llm.invoke([HumanMessage(content=prompt)])
-    return {"reference_answer": response.content.strip()}
+    return response.content.strip()
+
+
+@router.post("/interview/reference-answer")
+async def generate_reference_answer(
+    body: ReferenceAnswerRequest, user_id: str = Depends(get_current_user),
+):
+    """Generate a reference answer for a question in a session, persist it as
+    a new version, and return the full version list."""
+    session = get_session(body.session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+    topic = session.get("topic")
+    if not topic:
+        raise HTTPException(400, "Session has no topic.")
+
+    question = next(
+        (q["question"] for q in session.get("questions") or []
+         if q.get("id") == body.question_id),
+        None,
+    )
+    if not question:
+        raise HTTPException(404, "Question not found in session.")
+
+    content = _generate_single_reference_answer(topic, question, user_id)
+    versions = append_reference_answer(
+        body.session_id, body.question_id, content, user_id=user_id,
+    )
+    return {"versions": versions}
 
 
 @router.get("/interview/in-progress")

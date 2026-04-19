@@ -231,6 +231,29 @@ DRILL_BATCH_EVAL_PROMPT = """你是「{topic_name}」领域的技术专家，正
 """
 
 
+DRILL_BATCH_EVAL_REF_APPENDIX = """
+## 额外任务：为每题附带参考答案
+在 scores 数组的每个对象中，除上述字段外额外输出字段 `reference_answer`（候选人视角），内容为 Markdown 字符串：
+- 先列 3-5 个 **核心要点**（无序列表，每点一句话）
+- 再给一段 **示范回答**（引用块 `>`），100-200 字，口语化但专业，像真在面试中回答一样
+- 不要写"核心要点"和"示范回答"以外的内容
+
+示例：
+```json
+{
+    "question_id": 1,
+    "score": 7,
+    "assessment": "...",
+    "improvement": "...",
+    "understanding": "...",
+    "weak_point": null,
+    "key_missing": [],
+    "reference_answer": "- 要点1\\n- 要点2\\n- 要点3\\n\\n> 示范回答内容..."
+}
+```
+"""
+
+
 # ── 参考答案生成 ──
 
 REFERENCE_ANSWER_PROMPT = """你是「{topic_name}」领域的资深技术面试官，请为以下面试题生成一份参考答案。

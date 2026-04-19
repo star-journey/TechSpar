@@ -1,7 +1,7 @@
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
-import { BookOpen, BriefcaseBusiness, Sparkles, RotateCcw } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, Sparkles, RotateCcw, RefreshCw } from "lucide-react";
 import { getReview, getReferenceAnswer, startInterview, startJobPrep } from "../api/interview";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import { Button } from "@/components/ui/button";
@@ -181,24 +181,62 @@ function SoloRecordingReview({ topicsCovered, overall }) {
   );
 }
 
-function DrillReview({ scores, overall, questions, answers, topic }) {
+function DrillReview({ scores, overall, questions, answers, topic, sessionId, referenceAnswers }) {
   const answerMap = {};
   for (const a of (answers || [])) answerMap[a.question_id] = a.answer;
   const scoreMap = {};
   for (const s of (scores || [])) scoreMap[s.question_id] = s;
-  const [refAnswers, setRefAnswers] = useState({});
-  const [refLoading, setRefLoading] = useState({});
 
-  const handleRefAnswer = async (qId, questionText) => {
-    if (refAnswers[qId]) return;
-    setRefLoading((p) => ({ ...p, [qId]: true }));
-    try {
-      const data = await getReferenceAnswer(topic, questionText);
-      setRefAnswers((p) => ({ ...p, [qId]: data.reference_answer }));
-    } catch (e) {
-      setRefAnswers((p) => ({ ...p, [qId]: "生成失败: " + e.message }));
+  // { [qId]: { versions: [{content, created_at}], currentIndex: number } }
+  const [refState, setRefState] = useState(() => {
+    const init = {};
+    for (const [qid, versions] of Object.entries(referenceAnswers || {})) {
+      if (Array.isArray(versions) && versions.length) {
+        init[qid] = { versions, currentIndex: versions.length - 1 };
+      }
     }
-    setRefLoading((p) => ({ ...p, [qId]: false }));
+    return init;
+  });
+  const [refLoading, setRefLoading] = useState({});
+  const [refError, setRefError] = useState({});
+
+  useEffect(() => {
+    setRefState((prev) => {
+      const next = { ...prev };
+      for (const [qid, versions] of Object.entries(referenceAnswers || {})) {
+        if (!Array.isArray(versions) || !versions.length) continue;
+        if (!next[qid]) {
+          next[qid] = { versions, currentIndex: versions.length - 1 };
+        }
+      }
+      return next;
+    });
+  }, [referenceAnswers]);
+
+  const regenerate = async (qId) => {
+    setRefLoading((p) => ({ ...p, [qId]: true }));
+    setRefError((p) => ({ ...p, [qId]: null }));
+    try {
+      const { versions } = await getReferenceAnswer(sessionId, qId);
+      setRefState((p) => ({
+        ...p,
+        [qId]: { versions, currentIndex: (versions?.length || 1) - 1 },
+      }));
+    } catch (e) {
+      setRefError((p) => ({ ...p, [qId]: e.message || "生成失败" }));
+    } finally {
+      setRefLoading((p) => ({ ...p, [qId]: false }));
+    }
+  };
+
+  const switchVersion = (qId, delta) => {
+    setRefState((p) => {
+      const entry = p[qId];
+      if (!entry) return p;
+      const idx = Math.max(0, Math.min(entry.versions.length - 1, entry.currentIndex + delta));
+      if (idx === entry.currentIndex) return p;
+      return { ...p, [qId]: { ...entry, currentIndex: idx } };
+    });
   };
 
   const avgScore = overall?.avg_score || "-";
@@ -288,26 +326,65 @@ function DrillReview({ scores, overall, questions, answers, topic }) {
 
                 {topic && (
                   <div className="mt-3 pt-3 border-t border-border">
-                    {refAnswers[q.id] ? (
+                    {refState[q.id]?.versions?.length ? (
                       <div className="text-sm leading-[1.8]">
-                        <div className="text-xs font-semibold text-dim mb-2 flex items-center gap-1.5">
-                          <BookOpen size={13} /> 参考答案
+                        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                          <div className="text-xs font-semibold text-dim flex items-center gap-1.5">
+                            <BookOpen size={13} /> 参考答案
+                            {refState[q.id].versions.length > 1 && (
+                              <span className="ml-2 text-dim/70 inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="px-1 disabled:opacity-30 hover:text-text"
+                                  onClick={() => switchVersion(q.id, -1)}
+                                  disabled={refState[q.id].currentIndex === 0}
+                                >‹</button>
+                                <span>版本 {refState[q.id].currentIndex + 1}/{refState[q.id].versions.length}</span>
+                                <button
+                                  type="button"
+                                  className="px-1 disabled:opacity-30 hover:text-text"
+                                  onClick={() => switchVersion(q.id, +1)}
+                                  disabled={refState[q.id].currentIndex === refState[q.id].versions.length - 1}
+                                >›</button>
+                              </span>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-primary h-7 px-2"
+                            onClick={() => regenerate(q.id)}
+                            disabled={refLoading[q.id]}
+                          >
+                            <RefreshCw size={12} className={refLoading[q.id] ? "animate-spin" : ""} />
+                            {refLoading[q.id] ? "生成中..." : "重新生成"}
+                          </Button>
                         </div>
                         <div className="md-content bg-hover rounded-lg px-3.5 py-3">
-                          <ReactMarkdown>{refAnswers[q.id]}</ReactMarkdown>
+                          <ReactMarkdown>
+                            {refState[q.id].versions[refState[q.id].currentIndex].content}
+                          </ReactMarkdown>
                         </div>
+                        {refError[q.id] && (
+                          <div className="text-[12px] text-red mt-1.5">{refError[q.id]}</div>
+                        )}
                       </div>
                     ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-primary"
-                        onClick={() => handleRefAnswer(q.id, q.question)}
-                        disabled={refLoading[q.id]}
-                      >
-                        <BookOpen size={13} />
-                        {refLoading[q.id] ? "正在生成参考答案..." : "查看参考答案"}
-                      </Button>
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-primary"
+                          onClick={() => regenerate(q.id)}
+                          disabled={refLoading[q.id]}
+                        >
+                          <BookOpen size={13} />
+                          {refLoading[q.id] ? "正在生成参考答案..." : "查看参考答案"}
+                        </Button>
+                        {refError[q.id] && (
+                          <div className="text-[12px] text-red mt-1.5">{refError[q.id]}</div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -514,6 +591,7 @@ export default function Review() {
   const [topic, setTopic] = useState(stateData.topic || null);
   const [topicsCovered, setTopicsCovered] = useState(stateData.topics_covered || []);
   const [meta, setMeta] = useState(stateData.meta || {});
+  const [referenceAnswers, setReferenceAnswers] = useState(stateData.reference_answers || {});
   const [showTranscript, setShowTranscript] = useState(false);
   const [loading, setLoading] = useState(!review && !scores);
   const [restarting, setRestarting] = useState(false);
@@ -564,6 +642,7 @@ export default function Review() {
           const tc = data.topics_covered || data.overall?.topics_covered;
           if (tc) setTopicsCovered(tc);
           if (data.meta) setMeta(data.meta);
+          if (data.reference_answers) setReferenceAnswers(data.reference_answers);
           if (data.mode === "topic_drill" || data.mode === "jd_prep") {
             setAnswers(inferAnswers(data.questions || [], data.transcript || []));
           }
@@ -613,7 +692,15 @@ export default function Review() {
         ) : isJobPrep ? (
           <JobPrepReview scores={scores} overall={overall} questions={questions} answers={answers} meta={meta} />
         ) : showDrill ? (
-          <DrillReview scores={scores} overall={overall} questions={questions} answers={answers} topic={topic} />
+          <DrillReview
+            scores={scores}
+            overall={overall}
+            questions={questions}
+            answers={answers}
+            topic={topic}
+            sessionId={sessionId}
+            referenceAnswers={referenceAnswers}
+          />
         ) : (
           <>
             <DimensionScores

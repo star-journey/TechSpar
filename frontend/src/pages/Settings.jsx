@@ -92,6 +92,7 @@ export default function Settings() {
   const [temperature, setTemperature] = useState(0.7);
   const [numQuestions, setNumQuestions] = useState(10);
   const [divergence, setDivergence] = useState(3);
+  const [generateRefOnSubmit, setGenerateRefOnSubmit] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -126,6 +127,7 @@ export default function Settings() {
         setTemperature(data.llm.temperature ?? 0.7);
         setNumQuestions(data.training.num_questions ?? 10);
         setDivergence(data.training.divergence ?? 3);
+        setGenerateRefOnSubmit(!!data.training.generate_reference_answers_on_submit);
       })
       .catch((err) => setError("加载设置失败: " + err.message))
       .finally(() => setLoading(false));
@@ -263,7 +265,11 @@ export default function Settings() {
     try {
       await updateSettings({
         llm: { api_base: apiBase, api_key: apiKey, model, temperature },
-        training: { num_questions: numQuestions, divergence },
+        training: {
+          num_questions: numQuestions,
+          divergence,
+          generate_reference_answers_on_submit: generateRefOnSubmit,
+        },
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -526,6 +532,21 @@ export default function Settings() {
                   {DIVERGENCE_OPTIONS.find((o) => o.value === divergence)?.description}
                 </div>
               </div>
+
+              <label className="flex items-start gap-3 pt-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-1 w-4 h-4 accent-primary"
+                  checked={generateRefOnSubmit}
+                  onChange={(e) => setGenerateRefOnSubmit(e.target.checked)}
+                />
+                <span>
+                  <span className="text-sm font-medium">提交评估时一并生成参考答案</span>
+                  <span className="block text-[12px] text-dim/70 mt-0.5">
+                    勾选后，专项训练提交评估时会为每道已作答题预生成一份参考答案（与评估共用一次 LLM 调用）
+                  </span>
+                </span>
+              </label>
             </div>
           </CardContent>
         </Card>

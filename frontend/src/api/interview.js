@@ -202,11 +202,11 @@ export async function getTaskStatus(taskId) {
   return res.json();
 }
 
-export async function getReferenceAnswer(topic, question) {
+export async function getReferenceAnswer(sessionId, questionId) {
   const res = await authFetch(`${API_BASE}/interview/reference-answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic, question }),
+    body: JSON.stringify({ session_id: sessionId, question_id: questionId }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

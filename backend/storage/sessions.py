@@ -26,6 +26,7 @@ def _get_conn() -> sqlite3.Connection:
             review TEXT,
             answers_draft TEXT DEFAULT '[]',
             current_index INTEGER DEFAULT 0,
+            reference_answers TEXT DEFAULT '{}',
             user_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -39,6 +40,7 @@ def _get_conn() -> sqlite3.Connection:
         ("meta", "TEXT", "'{}'"),
         ("answers_draft", "TEXT", "'[]'"),
         ("current_index", "INTEGER", "0"),
+        ("reference_answers", "TEXT", "'{}'"),
     ]:
         try:
             conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
@@ -146,6 +148,7 @@ def get_session(session_id: str, *, user_id: str) -> dict | None:
     result["overall"] = json.loads(result.get("overall", "{}") or "{}")
     result["answers_draft"] = json.loads(result.get("answers_draft", "[]") or "[]")
     result["current_index"] = int(result.get("current_index") or 0)
+    result["reference_answers"] = json.loads(result.get("reference_answers", "{}") or "{}")
     return result
 
 
@@ -161,6 +164,76 @@ def save_answers_draft(session_id: str, answers: list[dict], current_index: int,
             session_id,
             user_id,
         ),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def get_reference_answers(session_id: str, *, user_id: str) -> dict:
+    """Return reference answers dict for a session (empty dict when missing)."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT reference_answers FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    return json.loads(row["reference_answers"] or "{}")
+
+
+def append_reference_answer(session_id: str, question_id, content: str, *, user_id: str) -> list[dict]:
+    """Append a new reference-answer version for a question. Returns that
+    question's full version list (oldest → newest)."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT reference_answers FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return []
+    data = json.loads(row["reference_answers"] or "{}")
+    key = str(question_id)
+    versions = data.get(key) or []
+    versions.append({"content": content, "created_at": datetime.now().isoformat()})
+    data[key] = versions
+    conn.execute(
+        "UPDATE sessions SET reference_answers = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE session_id = ? AND user_id = ?",
+        (json.dumps(data, ensure_ascii=False), session_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+    return versions
+
+
+def bulk_set_reference_answers(session_id: str, qid_to_content: dict, *, user_id: str) -> bool:
+    """Append one reference-answer version per question in a single write."""
+    if not qid_to_content:
+        return False
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT reference_answers FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False
+    data = json.loads(row["reference_answers"] or "{}")
+    now = datetime.now().isoformat()
+    for qid, content in qid_to_content.items():
+        if not content:
+            continue
+        key = str(qid)
+        versions = data.get(key) or []
+        versions.append({"content": content, "created_at": now})
+        data[key] = versions
+    cursor = conn.execute(
+        "UPDATE sessions SET reference_answers = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE session_id = ? AND user_id = ?",
+        (json.dumps(data, ensure_ascii=False), session_id, user_id),
     )
     conn.commit()
     conn.close()

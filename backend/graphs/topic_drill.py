@@ -7,7 +7,11 @@ from backend.config import settings
 from backend.llm_provider import get_langchain_llm
 from backend.indexer import retrieve_topic_context, load_topics
 from backend.memory import get_profile_summary, get_profile_summary_for_drill, get_topic_context_for_drill
-from backend.prompts.interviewer import DRILL_QUESTION_GEN_PROMPT, DRILL_BATCH_EVAL_PROMPT
+from backend.prompts.interviewer import (
+    DRILL_BATCH_EVAL_PROMPT,
+    DRILL_BATCH_EVAL_REF_APPENDIX,
+    DRILL_QUESTION_GEN_PROMPT,
+)
 
 
 def _get_topic_display(user_id: str) -> dict[str, str]:
@@ -157,8 +161,13 @@ def generate_drill_questions(
 
 
 def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict],
-                           user_id: str) -> dict:
-    """Batch evaluate all answers. 1 LLM call."""
+                           user_id: str, *, include_reference_answer: bool = False) -> dict:
+    """Batch evaluate all answers. 1 LLM call.
+
+    When ``include_reference_answer`` is True, the prompt instructs the LLM to
+    add a ``reference_answer`` field on each score entry — saves an extra N
+    calls compared to generating them one-by-one.
+    """
     topic_display = _get_topic_display(user_id)
     topic_name = topic_display.get(topic, topic)
     answer_map = {a["question_id"]: a["answer"] for a in answers}
@@ -183,6 +192,8 @@ def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict
         qa_pairs="\n\n".join(qa_lines),
         references="\n\n".join(ref_lines)[:8000],
     )
+    if include_reference_answer:
+        prompt += DRILL_BATCH_EVAL_REF_APPENDIX
 
     llm = get_langchain_llm()
     response = llm.invoke([

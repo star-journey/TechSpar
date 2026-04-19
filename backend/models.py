@@ -156,6 +156,7 @@ class UserSettings(BaseModel):
     """Per-user training preferences."""
     num_questions: int = Field(default=10, ge=5, le=20)
     divergence: int = Field(default=3, ge=1, le=5)
+    generate_reference_answers_on_submit: bool = False
 
 
 class LLMSettings(BaseModel):
