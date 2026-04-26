@@ -9,6 +9,8 @@ import {
   endInterview,
   getSessionState,
   saveAnswersDraft,
+  retryReview,
+  getResumableSession,
 } from "../api/interview";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import useVoiceInput from "../hooks/useVoiceInput";
@@ -28,9 +30,12 @@ export default function Interview() {
 
   const [initData, setInitData] = useState(() => location.state || null);
   const [hydrated, setHydrated] = useState(false);
-  const mode = initData?.mode;
-  const isBatchMode = mode === "topic_drill" || mode === "jd_prep";
-  const isJobPrep = mode === "jd_prep";
+  const [bootstrapError, setBootstrapError] = useState("");
+  const [sessionStatus, setSessionStatus] = useState(location.state?.status || null);
+  const [resumeError, setResumeError] = useState(location.state?.review_error || "");
+
+  const isBatchMode = initData?.mode === "topic_drill" || initData?.mode === "jd_prep";
+  const isJobPrep = initData?.mode === "jd_prep";
 
   const [messages, setMessages] = useState(() => {
     const initMode = location.state?.mode;
@@ -44,7 +49,7 @@ export default function Interview() {
   const [reviewing, setReviewing] = useState(false);
   const [progress, setProgress] = useState(initData?.progress || "");
 
-  const [questions, setQuestions] = useState(() => location.state?.questions || []);
+  const [questions, setQuestions] = useState(location.state?.questions || []);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [drillInput, setDrillInput] = useState("");
@@ -60,59 +65,97 @@ export default function Interview() {
 
   useEffect(() => {
     let cancelled = false;
-    // When we arrived via navigate(..., { state }) from an entry page, the
-    // local React state already reflects an in-progress session — skip the
-    // hydration overwrites to avoid clobbering in-flight chat / answers.
-    const camePreloaded = !!location.state?.mode;
 
+    // Fresh start from a landing page → location.state carries everything.
+    if (location.state) {
+      if (!isBatchMode && location.state.message) {
+        setMessages([{ role: "assistant", content: location.state.message }]);
+      }
+      // Also hydrate any in-progress draft/transcript state from server
+      // to recover interrupted sessions without clobbering initial state.
+      (async () => {
+        try {
+          const state = await getSessionState(sessionId);
+          if (cancelled) return;
+          if (state.is_finished) {
+            navigate(`/review/${sessionId}`, { replace: true });
+            return;
+          }
+          if (state.mode === "topic_drill" || state.mode === "jd_prep") {
+            const dict = {};
+            for (const a of state.answers_draft || []) {
+              if (a && a.answer) dict[a.question_id] = a.answer;
+            }
+            if (Object.keys(dict).length) setAnswers(dict);
+            setCurrentIndex(
+              Math.min(state.current_index || 0, Math.max((state.questions || []).length - 1, 0))
+            );
+          } else if (state.mode === "resume") {
+            const msgs = (state.transcript || []).map((t) => ({
+              role: t.role,
+              content: t.content,
+            }));
+            if (msgs.length && !state.is_finished) setMessages(msgs);
+          }
+        } catch (err) {
+          console.warn("Failed to hydrate session state:", err.message);
+        } finally {
+          if (!cancelled) setHydrated(true);
+        }
+      })();
+      return () => { cancelled = true; };
+    }
+
+    // Resume-from-history: rebuild from server state (opened via URL / history list).
     (async () => {
       try {
-        const state = await getSessionState(sessionId);
+        const data = await getResumableSession(sessionId);
         if (cancelled) return;
-
-        if (state.is_finished) {
-          navigate(`/review/${sessionId}`, { replace: true });
-          return;
-        }
-
-        if (camePreloaded) return;
-
-        setInitData((prev) => ({
-          ...(prev || {}),
-          mode: state.mode,
-          topic: state.topic,
-          meta: state.meta,
-          company: state.meta?.company ?? prev?.company,
-          position: state.meta?.position ?? prev?.position,
-          questions: state.questions,
-        }));
-
-        if (state.questions?.length) setQuestions(state.questions);
-
-        if (state.mode === "topic_drill" || state.mode === "jd_prep") {
-          const dict = {};
-          for (const a of state.answers_draft || []) {
-            if (a && a.answer) dict[a.question_id] = a.answer;
+        setInitData({
+          mode: data.mode,
+          topic: data.topic,
+          target_role: data.target_role,
+          questions: data.questions,
+          meta: data.meta,
+          company: data.meta?.company,
+          position: data.meta?.position,
+        });
+        setQuestions(data.questions || []);
+        setSessionStatus(data.status);
+        setResumeError(data.review_error || "");
+        if (data.mode === "resume") {
+          setMessages((data.transcript || []).map((m) => ({ role: m.role, content: m.content })));
+          if (!data.can_continue || data.is_finished || data.status !== "ongoing") {
+            setFinished(true);
           }
-          setAnswers(dict);
-          setCurrentIndex(Math.min(state.current_index || 0, Math.max((state.questions || []).length - 1, 0)));
-        } else if (state.mode === "resume") {
-          const msgs = (state.transcript || []).map((t) => ({
-            role: t.role,
-            content: t.content,
-          }));
-          if (msgs.length) setMessages(msgs);
+        } else {
+          const saved = {};
+          (data.transcript || []).forEach((entry, idx, arr) => {
+            if (entry.role !== "user") return;
+            const prev = arr[idx - 1];
+            if (!prev || prev.role !== "assistant") return;
+            const q = (data.questions || []).find((q) => q.question === prev.content);
+            if (q) saved[q.id] = entry.content;
+          });
+          setAnswers(saved);
+          if (data.status !== "ongoing") {
+            setFinished(true);
+            setSubmitted(true);
+          }
+        }
+        if (data.status === "reviewing") {
+          const type = data.mode === "resume" ? "resume_review"
+            : data.mode === "jd_prep" ? "jd_review" : "drill_review";
+          startTask(sessionId, type, "复盘生成中");
         }
       } catch (err) {
-        console.warn("Failed to hydrate session state:", err.message);
+        if (!cancelled) setBootstrapError(err.message || "无法加载面试");
       } finally {
         if (!cancelled) setHydrated(true);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, navigate, location.state]);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!isBatchMode) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -250,9 +293,25 @@ export default function Interview() {
     try {
       await endInterview(sessionId);
       setFinished(true);
+      setSessionStatus("reviewing");
+      setResumeError("");
       startTask(sessionId, "resume_review", "简历面试复盘生成中");
     } catch (err) {
       alert("结束面试失败: " + err.message);
+    } finally {
+      setReviewing(false);
+    }
+  };
+
+  const handleRetryResumeReview = async () => {
+    setReviewing(true);
+    try {
+      await retryReview(sessionId);
+      setSessionStatus("reviewing");
+      setResumeError("");
+      startTask(sessionId, "resume_review", "简历面试复盘生成中");
+    } catch (err) {
+      alert("重新生成失败: " + err.message);
     } finally {
       setReviewing(false);
     }
@@ -267,7 +326,7 @@ export default function Interview() {
 
   const modeBadge = isJobPrep
     ? { text: "JD 备面", variant: "blue" }
-    : mode === "topic_drill"
+    : initData?.mode === "topic_drill" 
       ? { text: "专项训练", variant: "success" }
       : { text: "简历面试", variant: "default" };
 
@@ -291,18 +350,21 @@ export default function Interview() {
     </button>
   );
 
-  if (!hydrated && !mode) {
+  if (!initData) {
     return (
-      <div className="flex-1 flex flex-col h-full">
-        <div className="flex items-center justify-between px-4 py-3 md:px-6 border-b border-border bg-card">
-          <Skeleton className="h-6 w-32" />
-          <Skeleton className="h-8 w-24 rounded-md" />
-        </div>
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 md:py-8 flex flex-col items-center gap-5">
-          <Skeleton className="h-2 w-[720px] max-w-full rounded-full" />
-          <Skeleton className="h-[220px] w-[720px] max-w-full rounded-2xl" />
-          <Skeleton className="h-[120px] w-[720px] max-w-full rounded-xl" />
-        </div>
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+        {bootstrapError ? (
+          <>
+            <div className="text-[15px] text-red">{bootstrapError}</div>
+            <Button variant="outline" onClick={() => navigate("/history")}>返回历史记录</Button>
+          </>
+        ) : (
+          <>
+            <Skeleton className="h-8 w-72" />
+            <Skeleton className="h-32 w-full max-w-[720px]" />
+            <Skeleton className="h-32 w-full max-w-[720px]" />
+          </>
+        )}
       </div>
     );
   }
@@ -506,21 +568,45 @@ export default function Interview() {
         </div>
         {(() => {
           const task = tasks.find((t) => t.id === sessionId);
-          const taskDone = task?.status === "done";
+          const taskDone = task?.status === "done" || sessionStatus === "reviewed";
+          const taskError = task?.status === "error" || sessionStatus === "review_failed";
+          // Four branches: live chat → end, review failed → retry, review in-flight → wait, review done → view.
+          let handler;
+          let label;
+          if (taskDone) {
+            handler = () => navigate(`/review/${sessionId}`);
+            label = "查看复盘";
+          } else if (taskError) {
+            handler = handleRetryResumeReview;
+            label = reviewing ? "重新生成中..." : "重新生成复盘";
+          } else if (!finished) {
+            handler = handleEndResume;
+            label = reviewing ? "生成复盘中..." : "结束面试";
+          } else {
+            handler = undefined;
+            label = "复盘生成中...";
+          }
           return (
             <Button
               variant="destructive"
               size="sm"
-              onClick={finished && taskDone ? () => navigate(`/review/${sessionId}`) : !finished ? handleEndResume : undefined}
-              disabled={reviewing || (finished && !taskDone)}
+              onClick={handler}
+              disabled={reviewing || (!handler && !taskDone)}
             >
-              {reviewing ? "生成复盘中..." : !finished ? "结束面试" : taskDone ? "查看复盘" : "复盘生成中..."}
+              {label}
             </Button>
           );
         })()}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6 md:py-8 flex flex-col gap-7 max-w-3xl w-full mx-auto">
+        {sessionStatus === "review_failed" && (
+          <div className="rounded-xl border border-red/20 bg-red/5 px-4 py-3 text-[13px] leading-6 text-red/90">
+            <div className="font-medium">复盘生成失败</div>
+            {resumeError && <div className="mt-1 text-red/80">{resumeError}</div>}
+            <div className="mt-1 text-dim">面试问答已保存；点击右上角"重新生成复盘"再次尝试。</div>
+          </div>
+        )}
         {messages.map((msg, i) => (
           <ChatBubble key={i} role={msg.role} content={msg.content} />
         ))}

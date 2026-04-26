@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { FileText, ChevronRight, CalendarDays, UploadCloud, CheckCircle2, Clock, Play } from "lucide-react";
-import { getResumeStatus, uploadResume, startInterview, getHistory } from "../api/interview";
+import { FileText, ChevronRight, CalendarDays, UploadCloud, CheckCircle2, Clock, Play, Briefcase, Sparkles } from "lucide-react";
+import { getResumeStatus, uploadResume, startInterview, getHistory, getProfile, inferTargetRole } from "../api/interview";
 import ContinueSessionBanner from "../components/ContinueSessionBanner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 
@@ -54,16 +55,36 @@ export default function ResumeInterview() {
   const [pageLoading, setPageLoading] = useState(true);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [targetRole, setTargetRole] = useState("");
+  const [targetRoleInferring, setTargetRoleInferring] = useState(false);
   const { creatingSessionMode, setCreatingSessionMode } = useTaskStatus();
   const loading = creatingSessionMode === "resume";
 
+  const autoInferRole = async () => {
+    setTargetRoleInferring(true);
+    try {
+      const { target_role } = await inferTargetRole();
+      if (target_role) setTargetRole(target_role);
+    } catch {
+      // Silent fallback — user can type manually.
+    } finally {
+      setTargetRoleInferring(false);
+    }
+  };
+
   useEffect(() => {
-    getResumeStatus()
-      .then((s) => {
-        if (s.has_resume) setResumeFile({ filename: s.filename, size: s.size });
-      })
-      .catch(() => {})
-      .finally(() => setPageLoading(false));
+    Promise.all([
+      getResumeStatus().catch(() => ({ has_resume: false })),
+      getProfile().catch(() => ({})),
+    ]).then(([s, p]) => {
+      if (s.has_resume) setResumeFile({ filename: s.filename, size: s.size });
+      const existing = (p?.target_role || "").trim();
+      if (existing) {
+        setTargetRole(existing);
+      } else if (s.has_resume) {
+        autoInferRole();
+      }
+    }).finally(() => setPageLoading(false));
 
     getHistory(3, 0, "resume")
       .then((data) => setHistory(data.items || []))
@@ -75,9 +96,13 @@ export default function ResumeInterview() {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    const hadResume = !!resumeFile;
     try {
       const data = await uploadResume(file);
       setResumeFile({ filename: data.filename, size: data.size });
+      if (!hadResume && !targetRole.trim()) {
+        await autoInferRole();
+      }
     } catch (err) {
       alert("上传失败: " + err.message);
     } finally {
@@ -88,9 +113,11 @@ export default function ResumeInterview() {
 
   const handleStart = async () => {
     if (!resumeFile) return;
+    const role = targetRole.trim();
+    if (!role) return;
     setCreatingSessionMode("resume");
     try {
-      const data = await startInterview("resume");
+      const data = await startInterview("resume", null, { targetRole: role });
       navigate(`/interview/${data.session_id}`, { state: data });
     } catch (err) {
       alert("启动失败: " + err.message);
@@ -178,7 +205,34 @@ export default function ResumeInterview() {
             )}
           </div>
 
-          <div className="mt-8 pt-7 border-t border-border/70 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="mt-6 pt-5 border-t border-border/50">
+            <div className="flex items-center gap-2 mb-2.5">
+              <Briefcase size={14} className="text-dim" />
+              <label className="text-[13px] font-semibold text-text">本次面试目标岗位</label>
+            </div>
+            <div className="flex gap-2">
+              <Input
+                value={targetRole}
+                onChange={(e) => setTargetRole(e.target.value)}
+                placeholder={targetRoleInferring ? "正在根据简历推断..." : "如：AI 应用开发工程师 / 后端开发实习生"}
+                disabled={targetRoleInferring}
+                className="h-10 flex-1"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-10 px-3 shrink-0"
+                disabled={!resumeFile || targetRoleInferring}
+                onClick={autoInferRole}
+                title="根据简历重新推断"
+              >
+                <Sparkles size={14} className={cn(targetRoleInferring && "animate-spin")} />
+              </Button>
+            </div>
+            <div className="text-[12px] text-dim mt-1.5">面试官会按该岗位方向调整考察重点与追问深度</div>
+          </div>
+
+          <div className="mt-6 pt-5 border-t border-border/70 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="text-[13px] text-dim w-full md:w-auto text-center md:text-left">
               准备开始迎接挑战？点击右侧正式进入模拟环境
             </div>
@@ -193,7 +247,7 @@ export default function ResumeInterview() {
                 variant="gradient"
                 size="lg"
                 className="w-full md:w-auto h-14 px-10 text-[16px] font-bold tracking-wide rounded-xl shadow-lg shadow-primary/20 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-primary/30 disabled:opacity-40 disabled:hover:translate-y-0 disabled:shadow-none shrink-0"
-                disabled={!resumeFile}
+                disabled={!resumeFile || !targetRole.trim() || targetRoleInferring}
                 onClick={handleStart}
               >
                 <Play size={18} className="mr-2 fill-current" /> 立即开始模拟
@@ -268,11 +322,18 @@ export default function ResumeInterview() {
               </div>
             ) : (
               <div className="flex flex-col gap-3.5">
-                {history.map((s) => (
+                {history.map((s) => {
+                  const reviewed = (s.status || "reviewed") === "reviewed";
+                  const title = reviewed
+                    ? "简历沉浸式死磕"
+                    : s.status === "review_failed" ? "复盘生成失败，点击重试"
+                    : s.status === "reviewing" ? "复盘正在生成中"
+                    : "面试未完成，点击继续";
+                  return (
                   <Card
                     key={s.session_id}
                     className="cursor-pointer group flex items-center justify-between p-4 md:p-5 hover:border-primary/40 hover:bg-card hover:shadow-lg hover:shadow-primary/5 transition-all rounded-2xl border-border/80 bg-card/40"
-                    onClick={() => navigate(`/review/${s.session_id}`)}
+                    onClick={() => navigate(reviewed ? `/review/${s.session_id}` : `/interview/${s.session_id}`)}
                   >
                     <div className="flex items-center gap-4 min-w-0 flex-1">
                       <div className="w-11 h-11 rounded-xl bg-background border border-border/60 flex items-center justify-center text-text shrink-0 group-hover:bg-primary/10 group-hover:border-primary/30 group-hover:text-primary transition-all shadow-sm">
@@ -280,7 +341,7 @@ export default function ResumeInterview() {
                       </div>
                       <div className="flex flex-col min-w-0 gap-1.5">
                         <div className="font-bold text-[15px] text-text truncate pr-4 tracking-tight group-hover:text-primary transition-colors">
-                          简历沉浸式死磕
+                          {title}
                         </div>
                         <div className="flex items-center gap-1.5 text-[12px] text-dim font-medium tabular-nums">
                           <Clock size={12} className="opacity-80" />
@@ -295,7 +356,8 @@ export default function ResumeInterview() {
                        </div>
                     </div>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

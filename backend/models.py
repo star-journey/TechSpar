@@ -30,6 +30,7 @@ class InterviewPhase(str, Enum):
 class ResumeInterviewState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     phase: str           # InterviewPhase value
+    target_role: str     # 候选人应聘岗位，注入 interviewer prompt
     resume_context: str
     questions_asked: list[str]
     phase_question_count: int
@@ -58,6 +59,7 @@ class StartInterviewRequest(BaseModel):
     topic: str | None = None
     num_questions: int | None = None
     divergence: int | None = None
+    target_role: str | None = None  # resume 模式必填，缺省时回落到 profile.target_role
 
 
 class JobPrepPreviewRequest(BaseModel):

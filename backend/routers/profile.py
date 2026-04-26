@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.auth import get_current_user
+from backend.config import settings
 from backend.indexer import load_topics
 from backend.memory import get_profile
 from backend.runtime import _task_status
@@ -20,6 +21,35 @@ router = APIRouter(prefix="/api")
 def get_user_profile(user_id: str = Depends(get_current_user)):
     """Get the user's accumulated interview profile."""
     return get_profile(user_id)
+
+
+@router.post("/profile/infer-target-role")
+def infer_target_role(user_id: str = Depends(get_current_user)):
+    """LLM-infer a target role from the candidate's resume. Does not persist."""
+    resume_dir = settings.user_resume_path(user_id)
+    if not resume_dir.exists() or not any(p.suffix.lower() == ".pdf" for p in resume_dir.iterdir()):
+        raise HTTPException(400, "请先上传简历")
+
+    from backend.indexer import query_resume
+    from backend.llm_provider import get_langchain_llm
+    from backend.prompts.interviewer import INFER_TARGET_ROLE_PROMPT
+
+    try:
+        resume_ctx = query_resume(
+            "列出候选人的技术栈、项目方向、教育背景与目标岗位相关线索", user_id
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"读取简历失败: {exc}")
+
+    llm = get_langchain_llm()
+    response = llm.invoke([
+        SystemMessage(content="你是岗位推断引擎。只返回岗位名称，不要任何其他内容。"),
+        HumanMessage(content=INFER_TARGET_ROLE_PROMPT.format(resume_context=resume_ctx)),
+    ])
+    role = (response.content or "").strip().strip('"').strip("「」").strip()
+    if not role:
+        raise HTTPException(500, "推断失败，请手动填写")
+    return {"target_role": role}
 
 
 @router.get("/profile/due-reviews")

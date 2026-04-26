@@ -89,7 +89,7 @@ def _get_profile_lock(user_id: str) -> asyncio.Lock:
 
 DEFAULT_PROFILE = {
     "name": "",
-    "target_role": "AI 应用开发实习生",
+    "target_role": "",
     "updated_at": "",
 
     # 上次 consolidation 运行时间 (用于节流,避免每次 session 都跑 Stage 3)
@@ -262,6 +262,19 @@ def _save_insight(mode: str, topic: str, summary: str, raw_extraction: dict, use
 
 def get_profile(user_id: str) -> dict:
     return _load_profile(user_id)
+
+
+async def update_target_role(user_id: str, target_role: str) -> None:
+    """Persist target_role as the sticky default for future sessions."""
+    target_role = (target_role or "").strip()
+    if not target_role:
+        return
+    async with _get_profile_lock(user_id):
+        profile = _load_profile(user_id)
+        if profile.get("target_role") == target_role:
+            return
+        profile["target_role"] = target_role
+        _save_profile(profile, user_id)
 
 
 def get_topic_context_for_drill(topic: str, user_id: str) -> dict:

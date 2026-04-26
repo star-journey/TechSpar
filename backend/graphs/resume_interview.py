@@ -87,7 +87,9 @@ def _make_init_interview(user_id: str):
         )
         profile_summary = await asyncio.to_thread(get_profile_summary, user_id)
 
+        target_role = (state.get("target_role") or "").strip() or "候选人应聘岗位"
         system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
+            target_role=target_role,
             resume_context=resume_ctx,
             phase=InterviewPhase.GREETING.value,
             asked_questions="无",
@@ -103,6 +105,7 @@ def _make_init_interview(user_id: str):
         return {
             "messages": [response],
             "resume_context": resume_ctx,
+            "target_role": target_role,
             "phase": InterviewPhase.GREETING.value,
             "questions_asked": [],
             "phase_question_count": 0,
@@ -120,7 +123,9 @@ def _make_interviewer_ask(user_id: str):
         asked_str = "\n".join(f"- {q}" for q in asked) if asked else "无"
 
         profile_summary = await asyncio.to_thread(get_profile_summary, user_id)
+        target_role = (state.get("target_role") or "").strip() or "候选人应聘岗位"
         system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
+            target_role=target_role,
             resume_context=state.get("resume_context", ""),
             phase=state.get("phase", "technical"),
             asked_questions=asked_str,
