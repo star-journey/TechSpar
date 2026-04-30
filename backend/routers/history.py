@@ -29,9 +29,10 @@ async def get_review(session_id: str, user_id: str = Depends(get_current_user)):
 async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)):
     """Poll async task status."""
     task = _task_status.get(task_id)
-    if not task:
+    if not task or task.get("user_id") not in (None, user_id):
         raise HTTPException(404, "Task not found.")
-    return {"task_id": task_id, **task}
+    public_task = {key: value for key, value in task.items() if key != "user_id"}
+    return {"task_id": task_id, **public_task}
 
 
 @router.get("/interview/history")

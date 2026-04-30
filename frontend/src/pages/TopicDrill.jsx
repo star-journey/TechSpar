@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Target, Play, Layers } from "lucide-react";
 import TopicCard from "../components/TopicCard";
 import ContinueSessionBanner from "../components/ContinueSessionBanner";
-import { getTopics, startInterview } from "../api/interview";
+import { getSettings, getTaskStatus, getTopics, startInterview } from "../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,9 +11,11 @@ import { useTaskStatus } from "../contexts/TaskStatusContext";
 
 export default function TopicDrill() {
   const navigate = useNavigate();
+  const taskTimerRef = useRef(null);
   const [topics, setTopics] = useState({});
   const [selectedTopic, setSelectedTopic] = useState(null);
   const [pageLoading, setPageLoading] = useState(true);
+  const [drillGenerationTimeoutSeconds, setDrillGenerationTimeoutSeconds] = useState(300);
   const { creatingSessionMode, setCreatingSessionMode } = useTaskStatus();
   const loading = creatingSessionMode === "topic_drill";
 
@@ -22,14 +24,57 @@ export default function TopicDrill() {
       .then(setTopics)
       .catch(() => setTopics({}))
       .finally(() => setPageLoading(false));
+
+    getSettings()
+      .then((data) => setDrillGenerationTimeoutSeconds(data.training?.drill_generation_timeout_seconds ?? 300))
+      .catch(() => setDrillGenerationTimeoutSeconds(300));
+
+    return () => {
+      if (taskTimerRef.current) clearInterval(taskTimerRef.current);
+    };
   }, []);
+
+  const waitForStartTask = (taskId) => new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const timeoutMs = drillGenerationTimeoutSeconds * 1000;
+    const clearTimer = () => {
+      if (taskTimerRef.current) clearInterval(taskTimerRef.current);
+      taskTimerRef.current = null;
+    };
+    const poll = async () => {
+      if (Date.now() - startedAt > timeoutMs) {
+        clearTimer();
+        reject(new Error(`出题超过 ${Math.round(drillGenerationTimeoutSeconds / 60)} 分钟仍未完成，请稍后重试`));
+        return;
+      }
+
+      try {
+        const task = await getTaskStatus(taskId);
+        if (task.status === "done") {
+          clearTimer();
+          resolve(task.result);
+        } else if (task.status === "error") {
+          clearTimer();
+          reject(new Error(task.error || "出题失败，请稍后重试"));
+        }
+      } catch (err) {
+        clearTimer();
+        reject(err);
+      }
+    };
+    poll();
+    taskTimerRef.current = setInterval(poll, 3000);
+  });
 
   const handleStart = async () => {
     if (!selectedTopic) return;
     setCreatingSessionMode("topic_drill");
     try {
       const data = await startInterview("topic_drill", selectedTopic);
-      navigate(`/interview/${data.session_id}`, { state: data });
+      const sessionData = data.status === "pending"
+        ? await waitForStartTask(data.session_id)
+        : data;
+      navigate(`/interview/${sessionData.session_id}`, { state: sessionData });
     } catch (err) {
       alert("启动失败: " + err.message);
     } finally {

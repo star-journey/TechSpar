@@ -92,6 +92,7 @@ export default function Settings() {
   const [temperature, setTemperature] = useState(0.7);
   const [numQuestions, setNumQuestions] = useState(10);
   const [divergence, setDivergence] = useState(3);
+  const [drillGenerationTimeoutSeconds, setDrillGenerationTimeoutSeconds] = useState(300);
   const [generateRefOnSubmit, setGenerateRefOnSubmit] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -127,6 +128,7 @@ export default function Settings() {
         setTemperature(data.llm.temperature ?? 0.7);
         setNumQuestions(data.training.num_questions ?? 10);
         setDivergence(data.training.divergence ?? 3);
+        setDrillGenerationTimeoutSeconds(data.training.drill_generation_timeout_seconds ?? 300);
         setGenerateRefOnSubmit(!!data.training.generate_reference_answers_on_submit);
       })
       .catch((err) => setError("加载设置失败: " + err.message))
@@ -268,6 +270,7 @@ export default function Settings() {
         training: {
           num_questions: numQuestions,
           divergence,
+          drill_generation_timeout_seconds: drillGenerationTimeoutSeconds,
           generate_reference_answers_on_submit: generateRefOnSubmit,
         },
       });
@@ -507,6 +510,23 @@ export default function Settings() {
                   }}
                 />
                 <div className="text-[12px] text-dim/60">范围 5 – 20，默认 10</div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className={labelClass}>出题等待上限（分钟）</Label>
+                <Input
+                  className={cn(inputClass, "max-w-[140px]")}
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={Math.round(drillGenerationTimeoutSeconds / 60)}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (v >= 1 && v <= 30) setDrillGenerationTimeoutSeconds(v * 60);
+                    else if (e.target.value === "") setDrillGenerationTimeoutSeconds(60);
+                  }}
+                />
+                <div className="text-[12px] text-dim/60">范围 1 – 30 分钟，默认 5 分钟</div>
               </div>
 
               <div className="space-y-2.5">

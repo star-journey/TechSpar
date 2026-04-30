@@ -149,7 +149,11 @@ def job_prep_start(req: JobPrepStartRequest, user_id: str = Depends(get_current_
 
 
 @router.post("/interview/start")
-async def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_current_user)):
+async def start_interview(
+    req: StartInterviewRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
     """Start a new interview session."""
     session_id = str(uuid.uuid4())[:8]
 
@@ -162,26 +166,24 @@ async def start_interview(req: StartInterviewRequest, user_id: str = Depends(get
         num_questions = req.num_questions or user_prefs.num_questions
         divergence = req.divergence or user_prefs.divergence
 
-        try:
-            # generate_drill_questions is sync + LLM-bound; offload to thread
-            # to avoid blocking the event loop.
-            questions = await asyncio.to_thread(
-                generate_drill_questions,
-                req.topic,
-                user_id,
-                num_questions=num_questions,
-                divergence=divergence,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(500, str(exc))
-
-        create_session(session_id, req.mode.value, req.topic, questions=questions, user_id=user_id)
-        _drill_sessions[session_id] = {"topic": req.topic, "questions": questions, "user_id": user_id}
+        _task_status[session_id] = {
+            "status": "pending",
+            "type": "drill_start",
+            "user_id": user_id,
+        }
+        background_tasks.add_task(
+            _start_drill_background,
+            session_id,
+            req.topic,
+            user_id,
+            num_questions,
+            divergence,
+        )
         return {
             "session_id": session_id,
             "mode": req.mode.value,
             "topic": req.topic,
-            "questions": questions,
+            "status": "pending",
         }
 
     if req.mode == InterviewMode.RESUME:
@@ -226,6 +228,44 @@ async def start_interview(req: StartInterviewRequest, user_id: str = Depends(get
         }
 
     raise HTTPException(400, f"Unsupported mode for this endpoint: {req.mode.value}")
+
+
+def _start_drill_background(
+    session_id: str,
+    topic: str,
+    user_id: str,
+    num_questions: int,
+    divergence: int,
+):
+    try:
+        questions = generate_drill_questions(
+            topic,
+            user_id,
+            num_questions=num_questions,
+            divergence=divergence,
+        )
+        create_session(session_id, InterviewMode.TOPIC_DRILL.value, topic, questions=questions, user_id=user_id)
+        _drill_sessions[session_id] = {"topic": topic, "questions": questions, "user_id": user_id}
+        _task_status[session_id] = {
+            "status": "done",
+            "type": "drill_start",
+            "result": {
+                "session_id": session_id,
+                "mode": InterviewMode.TOPIC_DRILL.value,
+                "topic": topic,
+                "questions": questions,
+            },
+            "user_id": user_id,
+        }
+        logger.info("Drill session %s generated", session_id)
+    except Exception as exc:
+        logger.exception("Drill session generation failed for %s", session_id)
+        _task_status[session_id] = {
+            "status": "error",
+            "type": "drill_start",
+            "error": str(exc)[:500] or "未知错误",
+            "user_id": user_id,
+        }
 
 
 @router.post("/interview/chat")
