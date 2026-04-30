@@ -330,7 +330,7 @@ def list_in_progress_sessions(*, user_id: str, mode: str | None = None, limit: i
         questions = json.loads(r["questions"] or "[]")
         answers_draft = json.loads(r["answers_draft"] or "[]")
         transcript = json.loads(r["transcript"] or "[]")
-        answered_count = sum(1 for a in answers_draft if a.get("answer") is not None)
+        answered_count = sum(1 for a in answers_draft if (a.get("answer") or "").strip())
         if r["mode"] == "resume":
             # Resume mode uses chat turns, not draft answers — count user messages.
             answered_count = sum(1 for m in transcript if m.get("role") == "user")

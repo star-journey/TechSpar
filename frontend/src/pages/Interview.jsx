@@ -10,7 +10,6 @@ import {
   getSessionState,
   saveAnswersDraft,
   retryReview,
-  getResumableSession,
 } from "../api/interview";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import useVoiceInput from "../hooks/useVoiceInput";
@@ -47,7 +46,7 @@ export default function Interview() {
   const [sending, setSending] = useState(false);
   const [finished, setFinished] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const [progress, setProgress] = useState(initData?.progress || "");
+  const [progress] = useState(initData?.progress || "");
 
   const [questions, setQuestions] = useState(location.state?.questions || []);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -66,52 +65,13 @@ export default function Interview() {
   useEffect(() => {
     let cancelled = false;
 
-    // Fresh start from a landing page → location.state carries everything.
-    if (location.state) {
-      if (!isBatchMode && location.state.message) {
-        setMessages([{ role: "assistant", content: location.state.message }]);
-      }
-      // Also hydrate any in-progress draft/transcript state from server
-      // to recover interrupted sessions without clobbering initial state.
-      (async () => {
-        try {
-          const state = await getSessionState(sessionId);
-          if (cancelled) return;
-          if (state.is_finished) {
-            navigate(`/review/${sessionId}`, { replace: true });
-            return;
-          }
-          if (state.mode === "topic_drill" || state.mode === "jd_prep") {
-            const dict = {};
-            for (const a of state.answers_draft || []) {
-              if (a && a.answer) dict[a.question_id] = a.answer;
-            }
-            if (Object.keys(dict).length) setAnswers(dict);
-            setCurrentIndex(
-              Math.min(state.current_index || 0, Math.max((state.questions || []).length - 1, 0))
-            );
-          } else if (state.mode === "resume") {
-            const msgs = (state.transcript || []).map((t) => ({
-              role: t.role,
-              content: t.content,
-            }));
-            if (msgs.length && !state.is_finished) setMessages(msgs);
-          }
-        } catch (err) {
-          console.warn("Failed to hydrate session state:", err.message);
-        } finally {
-          if (!cancelled) setHydrated(true);
-        }
-      })();
-      return () => { cancelled = true; };
-    }
-
-    // Resume-from-history: rebuild from server state (opened via URL / history list).
     (async () => {
       try {
-        const data = await getResumableSession(sessionId);
+        const data = await getSessionState(sessionId);
         if (cancelled) return;
+
         setInitData({
+          ...(location.state || {}),
           mode: data.mode,
           topic: data.topic,
           target_role: data.target_role,
@@ -119,41 +79,69 @@ export default function Interview() {
           meta: data.meta,
           company: data.meta?.company,
           position: data.meta?.position,
+          status: data.status,
+          review_error: data.review_error,
         });
         setQuestions(data.questions || []);
         setSessionStatus(data.status);
         setResumeError(data.review_error || "");
-        if (data.mode === "resume") {
-          setMessages((data.transcript || []).map((m) => ({ role: m.role, content: m.content })));
+
+        if (data.review_ready || data.status === "reviewed") {
+          navigate(`/review/${sessionId}`, { replace: true });
+          return;
+        }
+
+        if (data.mode === "topic_drill" || data.mode === "jd_prep") {
+          const saved = {};
+          for (const a of data.answers_draft || []) {
+            if (a && a.answer) saved[a.question_id] = a.answer;
+          }
+          if (!Object.keys(saved).length) {
+            (data.transcript || []).forEach((entry, idx, arr) => {
+              if (entry.role !== "user") return;
+              const prev = arr[idx - 1];
+              if (!prev || prev.role !== "assistant") return;
+              const q = (data.questions || []).find((q) => q.question === prev.content);
+              if (q) saved[q.id] = entry.content;
+            });
+          }
+          const maxIndex = Math.max((data.questions || []).length - 1, 0);
+          const nextIndex = Math.min(data.current_index || 0, maxIndex);
+          const currentQuestion = (data.questions || [])[nextIndex];
+          setAnswers(saved);
+          setCurrentIndex(nextIndex);
+          setDrillInput(currentQuestion ? saved[currentQuestion.id] || "" : "");
+          if (data.status !== "ongoing") {
+            setFinished(true);
+            setSubmitted(data.status === "reviewing" || data.status === "review_failed");
+          }
+        } else {
+          const msgs = (data.transcript || []).map((m) => ({ role: m.role, content: m.content }));
+          if (msgs.length) setMessages(msgs);
+          else if (location.state?.message) setMessages([{ role: "assistant", content: location.state.message }]);
           if (!data.can_continue || data.is_finished || data.status !== "ongoing") {
             setFinished(true);
           }
-        } else {
-          const saved = {};
-          (data.transcript || []).forEach((entry, idx, arr) => {
-            if (entry.role !== "user") return;
-            const prev = arr[idx - 1];
-            if (!prev || prev.role !== "assistant") return;
-            const q = (data.questions || []).find((q) => q.question === prev.content);
-            if (q) saved[q.id] = entry.content;
-          });
-          setAnswers(saved);
-          if (data.status !== "ongoing") {
-            setFinished(true);
-            setSubmitted(true);
-          }
         }
+
         if (data.status === "reviewing") {
           const type = data.mode === "resume" ? "resume_review"
             : data.mode === "jd_prep" ? "jd_review" : "drill_review";
           startTask(sessionId, type, "复盘生成中");
         }
       } catch (err) {
-        if (!cancelled) setBootstrapError(err.message || "无法加载面试");
+        if (cancelled) return;
+        if (location.state) {
+          console.warn("Failed to hydrate session state:", err.message);
+          setInitData(location.state);
+        } else {
+          setBootstrapError(err.message || "无法加载面试");
+        }
       } finally {
         if (!cancelled) setHydrated(true);
       }
     })();
+
     return () => { cancelled = true; };
   }, []);
 
@@ -167,10 +155,16 @@ export default function Interview() {
 
   const currentQ = questions[currentIndex];
   const totalQ = questions.length;
-  const answeredCount = Object.keys(answers).length;
+  const answeredCount = Object.keys(answers).filter((qid) => answers[qid]?.trim()).length;
 
-  const persistDraft = (nextAnswers, nextIndex) => {
-    if (!isBatchMode) return;
+  const draftAnswers = useCallback((sourceAnswers = answers, activeText = drillInput) => {
+    const merged = { ...sourceAnswers };
+    if (currentQ && activeText.trim()) merged[currentQ.id] = activeText.trim();
+    return merged;
+  }, [answers, currentQ, drillInput]);
+
+  const persistDraft = useCallback((nextAnswers, nextIndex) => {
+    if (!isBatchMode || !questions.length || submitted) return;
     const payload = questions.map((q) => ({
       question_id: q.id,
       answer: nextAnswers[q.id] || "",
@@ -178,15 +172,24 @@ export default function Interview() {
     saveAnswersDraft(sessionId, payload, nextIndex).catch((err) => {
       console.warn("Failed to autosave answers:", err.message);
     });
-  };
+  }, [isBatchMode, questions, sessionId, submitted]);
+
+  useEffect(() => {
+    if (!hydrated || !isBatchMode || !questions.length || submitted) return;
+    const timer = setTimeout(() => {
+      persistDraft(draftAnswers(), currentIndex);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [hydrated, isBatchMode, questions, answers, drillInput, currentIndex, submitted, draftAnswers, persistDraft]);
 
   const handleDrillSubmit = () => {
     const text = drillInput.trim();
     if (!text || !currentQ) return;
     const nextAnswers = { ...answers, [currentQ.id]: text };
     const nextIndex = currentIndex < totalQ - 1 ? currentIndex + 1 : currentIndex;
+    const nextQuestion = questions[nextIndex];
     setAnswers(nextAnswers);
-    setDrillInput("");
+    setDrillInput(currentIndex < totalQ - 1 ? nextAnswers[nextQuestion?.id] || "" : "");
     if (currentIndex < totalQ - 1) setCurrentIndex(nextIndex);
     else setFinished(true);
     persistDraft(nextAnswers, nextIndex);
@@ -195,7 +198,8 @@ export default function Interview() {
   const handleSkip = () => {
     if (!currentQ) return;
     const nextIndex = currentIndex < totalQ - 1 ? currentIndex + 1 : currentIndex;
-    setDrillInput("");
+    const nextQuestion = questions[nextIndex];
+    setDrillInput(currentIndex < totalQ - 1 ? answers[nextQuestion?.id] || "" : "");
     if (currentIndex < totalQ - 1) setCurrentIndex(nextIndex);
     else setFinished(true);
     persistDraft(answers, nextIndex);
@@ -217,10 +221,13 @@ export default function Interview() {
     if (submitted && !isRetry) return;
     setSubmitting(true);
     try {
+      const finalAnswers = draftAnswers();
+      setAnswers(finalAnswers);
       const answerList = questions.map((q) => ({
         question_id: q.id,
-        answer: answers[q.id] || "",
+        answer: finalAnswers[q.id] || "",
       }));
+      await saveAnswersDraft(sessionId, answerList, currentIndex);
       await endInterview(sessionId, answerList);
       setSubmitted(true);
       setFinished(true);

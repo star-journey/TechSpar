@@ -5,6 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.auth import get_current_user
 from backend.runtime import _task_status
 from backend.storage.sessions import (
+    STATUS_REVIEW_FAILED,
+    STATUS_REVIEWED,
+    STATUS_REVIEWING,
     delete_session,
     get_session,
     list_distinct_topics,
@@ -29,10 +32,29 @@ async def get_review(session_id: str, user_id: str = Depends(get_current_user)):
 async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)):
     """Poll async task status."""
     task = _task_status.get(task_id)
-    if not task or task.get("user_id") not in (None, user_id):
+    if task and task.get("user_id") in (None, user_id):
+        public_task = {key: value for key, value in task.items() if key != "user_id"}
+        return {"task_id": task_id, **public_task}
+
+    session = get_session(task_id, user_id=user_id)
+    if not session:
         raise HTTPException(404, "Task not found.")
-    public_task = {key: value for key, value in task.items() if key != "user_id"}
-    return {"task_id": task_id, **public_task}
+
+    mode = session.get("mode")
+    task_type = "resume_review" if mode == "resume" else "jd_review" if mode == "jd_prep" else "drill_review"
+    status = session.get("status")
+    if session.get("review") or status == STATUS_REVIEWED:
+        return {"task_id": task_id, "status": "done", "type": task_type}
+    if status == STATUS_REVIEWING:
+        return {"task_id": task_id, "status": "pending", "type": task_type}
+    if status == STATUS_REVIEW_FAILED:
+        return {
+            "task_id": task_id,
+            "status": "error",
+            "type": task_type,
+            "error": session.get("review_error") or "复盘生成失败",
+        }
+    raise HTTPException(404, "Task not found.")
 
 
 @router.get("/interview/history")
