@@ -465,19 +465,40 @@ async def _run_resume_review(session_id: str, user_id: str):
     try:
         entry = await get_or_restore_resume_graph(session_id, user_id)
         if entry is None:
-            raise RuntimeError("会话状态已失效，无法恢复")
-
-        graph = entry["graph"]
-        config = entry["config"]
-        state = await graph.aget_state(config)
-        values = state.values or {}
-        messages = list(values.get("messages", []))
-        scores = values.get("scores", [])
-        weak_points = values.get("weak_points", [])
-        eval_history = values.get("eval_history", [])
-        topic_name = values.get("topic_name", entry.get("topic"))
-        mode = entry["mode"]
-        topic = entry.get("topic")
+            session = get_session(session_id, user_id=user_id)
+            if not session:
+                raise RuntimeError("会话不存在，无法恢复")
+            transcript = session.get("transcript") or []
+            messages = []
+            for item in transcript:
+                content = item.get("content") if isinstance(item, dict) else None
+                if not content:
+                    continue
+                if item.get("role") == "assistant":
+                    messages.append(AIMessage(content=content))
+                elif item.get("role") == "user":
+                    messages.append(HumanMessage(content=content))
+            if not messages:
+                raise RuntimeError("会话记录为空，无法生成复盘")
+            scores = session.get("scores") or []
+            weak_points = session.get("weak_points") or []
+            overall = session.get("overall") or {}
+            eval_history = overall.get("eval_history") or []
+            topic = session.get("topic")
+            topic_name = topic
+            mode = InterviewMode.RESUME
+        else:
+            graph = entry["graph"]
+            config = entry["config"]
+            state = await graph.aget_state(config)
+            values = state.values or {}
+            messages = list(values.get("messages", []))
+            scores = values.get("scores", [])
+            weak_points = values.get("weak_points", [])
+            eval_history = values.get("eval_history", [])
+            topic_name = values.get("topic_name", entry.get("topic"))
+            mode = entry["mode"]
+            topic = entry.get("topic")
 
         review = await asyncio.to_thread(
             generate_review,
@@ -489,19 +510,21 @@ async def _run_resume_review(session_id: str, user_id: str):
             eval_history=eval_history,
         )
 
-        extraction = await update_profile_after_interview(
-            mode=mode.value,
-            topic=topic,
-            messages=messages,
-            user_id=user_id,
-            scores=scores,
-        )
-
         resume_overall = {}
-        if extraction.get("dimension_scores"):
-            resume_overall["dimension_scores"] = extraction["dimension_scores"]
-        if extraction.get("avg_score"):
-            resume_overall["avg_score"] = extraction["avg_score"]
+        try:
+            extraction = await update_profile_after_interview(
+                mode=mode.value,
+                topic=topic,
+                messages=messages,
+                user_id=user_id,
+                scores=scores,
+            )
+            if extraction.get("dimension_scores"):
+                resume_overall["dimension_scores"] = extraction["dimension_scores"]
+            if extraction.get("avg_score"):
+                resume_overall["avg_score"] = extraction["avg_score"]
+        except Exception:
+            logger.exception("Profile update failed for reviewed session %s", session_id)
 
         save_review(session_id, review, scores, weak_points,
                     overall=resume_overall, user_id=user_id)
@@ -575,17 +598,20 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
         review = format_drill_review(questions, answers, scores, overall)
         save_review(session_id, review, scores, merged_weak_points, overall, user_id=user_id)
 
-        from backend.spaced_repetition import update_weak_point_sr
-
-        for score in scores:
-            weak_point = score.get("weak_point")
-            score_value = score.get("score")
-            if weak_point and isinstance(score_value, (int, float)):
-                update_weak_point_sr(topic, weak_point, score_value, user_id)
-
-        asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id, merged_weak_points))
-
         _task_status[session_id] = {"status": "done", "type": "drill_review", "user_id": user_id}
+
+        try:
+            from backend.spaced_repetition import update_weak_point_sr
+
+            for score in scores:
+                weak_point = score.get("weak_point")
+                score_value = score.get("score")
+                if weak_point and isinstance(score_value, (int, float)):
+                    update_weak_point_sr(topic, weak_point, score_value, user_id)
+
+            asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id, merged_weak_points))
+        except Exception:
+            logger.exception("Post-review updates failed for drill session %s", session_id)
         _drill_sessions.pop(session_id, None)
         logger.info("Drill review generated for session %s", session_id)
     except Exception as exc:
@@ -611,9 +637,12 @@ def _end_jd_prep_background(session_id, questions, answers, preview, meta, user_
         review = format_job_prep_review(questions, answers, scores, overall, meta)
         save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
 
-        asyncio.run(_update_job_prep_profile(overall, scores, len(questions), meta, user_id))
-
         _task_status[session_id] = {"status": "done", "type": "jd_review", "user_id": user_id}
+
+        try:
+            asyncio.run(_update_job_prep_profile(overall, scores, len(questions), meta, user_id))
+        except Exception:
+            logger.exception("Post-review updates failed for JD prep session %s", session_id)
         _job_prep_sessions.pop(session_id, None)
         logger.info("JD prep review generated for session %s", session_id)
     except Exception as exc:
@@ -758,7 +787,12 @@ async def retry_review_generation(
     if session.get("review") or session.get("status") == STATUS_REVIEWED:
         return {"session_id": session_id, "mode": session["mode"], "status": "done"}
     if session.get("status") == STATUS_REVIEWING:
-        return {"session_id": session_id, "mode": session["mode"], "status": "pending"}
+        task_status = _task_status.get(session_id)
+        if task_status and task_status.get("user_id") not in (None, user_id):
+            raise HTTPException(403, "Access denied.")
+        if task_status and task_status.get("status") == "pending":
+            return {"session_id": session_id, "mode": session["mode"], "status": "pending"}
+        return _dispatch_review(session_id, session, user_id, background_tasks)
     return _dispatch_review(session_id, session, user_id, background_tasks)
 
 
