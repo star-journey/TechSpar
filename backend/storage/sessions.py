@@ -93,6 +93,29 @@ def create_session(session_id: str, mode: str, topic: str | None = None,
     conn.close()
 
 
+def list_recent_drill_questions(topic: str, *, user_id: str, limit: int = 20) -> list[str]:
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT questions FROM sessions "
+        "WHERE topic = ? AND user_id = ? AND mode = ? AND status = ? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (topic, user_id, "topic_drill", STATUS_REVIEWED, limit),
+    ).fetchall()
+    conn.close()
+
+    questions = []
+    seen = set()
+    for row in reversed(rows):
+        for item in json.loads(row["questions"] or "[]"):
+            text = (item.get("question") or "").strip() if isinstance(item, dict) else ""
+            if text and text not in seen:
+                seen.add(text)
+                questions.append(text)
+            if len(questions) >= limit:
+                return questions
+    return questions
+
+
 def update_session_status(session_id: str, status: str, *, user_id: str,
                           review_error: str | None = None, clear_error: bool = False) -> bool:
     """Transition a session's lifecycle state. Returns False if not found."""

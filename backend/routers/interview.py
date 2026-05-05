@@ -517,6 +517,35 @@ async def _run_resume_review(session_id: str, user_id: str):
         _task_status[session_id] = {"status": "error", "type": "resume_review", "user_id": user_id}
 
 
+def _collect_drill_weak_points(topic: str, overall: dict, scores: list) -> list[dict]:
+    weak_points = []
+    seen = set()
+
+    def add_point(item):
+        if isinstance(item, dict):
+            point = (item.get("point") or "").strip()
+            if not point:
+                return
+            normalized = {**item, "point": point, "topic": item.get("topic") or topic}
+        else:
+            point = str(item or "").strip()
+            if not point:
+                return
+            normalized = {"point": point, "topic": topic, "axis": "knowledge"}
+        if point in seen:
+            return
+        seen.add(point)
+        weak_points.append(normalized)
+
+    for item in overall.get("new_weak_points", []) or []:
+        add_point(item)
+    for score in scores or []:
+        add_point({"point": score.get("weak_point"), "topic": topic, "axis": "knowledge"})
+        if len(weak_points) >= 10:
+            break
+    return weak_points[:10]
+
+
 def _end_drill_background(session_id, topic, questions, answers, user_id):
     """Background task: evaluate drill answers + update profile."""
     try:
@@ -542,8 +571,9 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
             if ref_map:
                 bulk_set_reference_answers(session_id, ref_map, user_id=user_id)
 
+        merged_weak_points = _collect_drill_weak_points(topic, overall, scores)
         review = format_drill_review(questions, answers, scores, overall)
-        save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
+        save_review(session_id, review, scores, merged_weak_points, overall, user_id=user_id)
 
         from backend.spaced_repetition import update_weak_point_sr
 
@@ -553,7 +583,7 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
             if weak_point and isinstance(score_value, (int, float)):
                 update_weak_point_sr(topic, weak_point, score_value, user_id)
 
-        asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id))
+        asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id, merged_weak_points))
 
         _task_status[session_id] = {"status": "done", "type": "drill_review", "user_id": user_id}
         _drill_sessions.pop(session_id, None)
@@ -732,7 +762,14 @@ async def retry_review_generation(
     return _dispatch_review(session_id, session, user_id, background_tasks)
 
 
-async def _update_drill_profile(topic: str, overall: dict, scores: list, total_questions: int, user_id: str):
+async def _update_drill_profile(
+    topic: str,
+    overall: dict,
+    scores: list,
+    total_questions: int,
+    user_id: str,
+    weak_points: list[dict] | None = None,
+):
     """Update profile from drill evaluation — Mem0-style LLM update."""
     valid = []
     for score in scores:
@@ -755,7 +792,7 @@ async def _update_drill_profile(topic: str, overall: dict, scores: list, total_q
     await llm_update_profile(
         mode="topic_drill",
         topic=topic,
-        new_weak_points=overall.get("new_weak_points", []),
+        new_weak_points=weak_points if weak_points is not None else overall.get("new_weak_points", []),
         new_strong_points=overall.get("new_strong_points", []),
         topic_mastery=mastery,
         communication=overall.get("communication_observations", {}),

@@ -279,6 +279,8 @@ async def update_target_role(user_id: str, target_role: str) -> None:
 
 def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     """Get personalized context for drill question generation."""
+    from backend.storage.sessions import list_recent_drill_questions, list_sessions_by_topic
+
     profile = _load_profile(user_id)
 
     mastery = profile.get("topic_mastery", {}).get(topic, {})
@@ -286,20 +288,49 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     mastery_notes = mastery.get("notes", "新领域，暂无历史数据" if mastery_score == 0 else "")
     mastery_info = f"{mastery_score}/100 — {mastery_notes}"
 
-    # Weak points for this topic
-    topic_weak = [
-        w["point"] for w in profile.get("weak_points", [])
-        if w.get("topic") == topic and not w.get("improved") and not w.get("archived")
-    ]
+    profile_weak_points = profile.get("weak_points", [])
+    inactive_points = {
+        _clean_point_text(w.get("point", ""))
+        for w in profile_weak_points
+        if w.get("topic") == topic and (w.get("improved") or w.get("archived"))
+    }
+    seen_weak = set()
+    topic_weak = []
+    for item in profile_weak_points:
+        point = _clean_point_text(item.get("point", ""))
+        if item.get("topic") == topic and point and not item.get("improved") and not item.get("archived"):
+            topic_weak.append(point)
+            seen_weak.add(point)
 
-    # Recent questions from score_history for this topic
-    recent_questions = [
-        h.get("question", "")
-        for h in profile.get("stats", {}).get("score_history", [])
-        if h.get("topic") == topic and h.get("question")
-    ][-20:]
+    sessions = list_sessions_by_topic(topic, user_id=user_id, limit=50)
+    for session in reversed(sessions):
+        candidates = []
+        candidates.extend(session.get("weak_points", []))
+        candidates.extend(session.get("overall", {}).get("new_weak_points", []))
+        candidates.extend({"point": score.get("weak_point"), "topic": topic} for score in session.get("scores", []))
+        for item in candidates:
+            if isinstance(item, dict):
+                point = _clean_point_text(item.get("point", ""))
+                item_topic = item.get("topic") or topic
+            else:
+                point = _clean_point_text(str(item))
+                item_topic = topic
+            if item_topic == topic and point and point not in seen_weak and point not in inactive_points:
+                topic_weak.append(point)
+                seen_weak.add(point)
+            if len(topic_weak) >= 15:
+                break
+        if len(topic_weak) >= 15:
+            break
 
-    # Semantic retrieval of past insights for this topic
+    recent_questions = list_recent_drill_questions(topic, user_id=user_id, limit=20)
+    if not recent_questions:
+        recent_questions = [
+            h.get("question", "")
+            for h in profile.get("stats", {}).get("score_history", [])
+            if h.get("topic") == topic and h.get("question")
+        ][-20:]
+
     past_insights = []
     try:
         from backend.vector_memory import search_memory
@@ -311,13 +342,23 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
             top_k=3,
         )
         past_insights = [r["content"] for r in results if r["score"] > 0.3]
-    except Exception:
-        pass  # vector table may not exist yet
+    except Exception as exc:
+        logger.debug("Vector memory unavailable for drill context: %s", exc)
+
+    if not past_insights:
+        for session in reversed(sessions):
+            summary = (session.get("overall", {}).get("summary") or "").strip()
+            if not summary:
+                summary = (session.get("review") or "").split("## 逐题复盘")[0].strip()
+            if summary:
+                past_insights.append(summary[:500])
+            if len(past_insights) >= 3:
+                break
 
     return {
         "mastery_info": mastery_info,
         "mastery_score": mastery_score,
-        "weak_points": topic_weak,
+        "weak_points": topic_weak[:15],
         "recent_questions": recent_questions,
         "past_insights": past_insights,
     }
