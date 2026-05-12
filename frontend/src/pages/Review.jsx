@@ -3,7 +3,6 @@ import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { BookOpen, BriefcaseBusiness, Sparkles, RotateCcw, RefreshCw } from "lucide-react";
 import { getReview, getReferenceAnswer, startInterview, startJobPrep } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -595,7 +594,6 @@ export default function Review() {
   const [showTranscript, setShowTranscript] = useState(false);
   const [loading, setLoading] = useState(!review && !scores);
   const [restarting, setRestarting] = useState(false);
-  const { setCreatingSessionMode } = useTaskStatus();
 
   const handleRestart = async () => {
     const currentMode = mode || stateData.mode;

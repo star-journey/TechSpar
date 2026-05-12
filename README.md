@@ -278,13 +278,15 @@ uvicorn backend.main:app --reload --port 8000
 pip install -r requirements.local-embedding.txt
 ```
 
-前端：
+前端（需要 Node.js `20.19+` 或 `22.12+`，推荐 Node 22 LTS）：
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
+CI、Docker 或需要严格复现 `package-lock.json` 的构建请使用 `npm ci`。
 
 访问：
 

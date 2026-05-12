@@ -5,7 +5,7 @@
 ### 环境要求
 
 * Python `3.11+`
-* Node.js `18+`
+* Node.js `20.19+` 或 `22.12+`（推荐 Node 22 LTS，Docker 构建使用 `node:22-alpine`）
 * 一个可用的 **OpenAI 兼容 LLM 接口**
 * 一个可用的 **Embedding 接口**，或者本地 Embedding 模型
 
@@ -107,6 +107,8 @@ cd frontend
 npm install
 npm run dev
 ```
+
+CI、Docker 或需要严格复现 `package-lock.json` 的构建请使用 `npm ci`。
 
 启动后访问：
 
