@@ -26,8 +26,10 @@ _TOPIC_SUFFIX_RE = re.compile(r'\s*[（(]领域[：:]\s*[^）)]+[）)]\s*$')
 PERFORMANCE_DIMENSIONS = {"communication", "reasoning", "narrative", "metacognition"}
 
 
-def _clean_point_text(text: str) -> str:
-    return _TOPIC_SUFFIX_RE.sub('', text).strip()
+def _clean_point_text(text: str | None) -> str:
+    if text is None:
+        return ""
+    return _TOPIC_SUFFIX_RE.sub('', str(text)).strip()
 
 
 def _get_canonical_topic_keys(user_id: str) -> set[str]:
@@ -430,16 +432,21 @@ def get_profile_summary(user_id: str) -> str:
     if profile.get("weak_points"):
         active_weak = [w for w in profile["weak_points"] if not w.get("improved") and not w.get("archived")]
         if active_weak:
-            observed = [w["point"] for w in active_weak if w.get("source", "observed") == "observed"][:6]
-            predicted = [w["point"] for w in active_weak if w.get("source") == "predicted"][:4]
+            observed = [_clean_point_text(w.get("point")) for w in active_weak if w.get("source", "observed") == "observed"][:6]
+            predicted = [_clean_point_text(w.get("point")) for w in active_weak if w.get("source") == "predicted"][:4]
+            observed = [p for p in observed if p]
+            predicted = [p for p in predicted if p]
             if observed:
                 parts.append(f"已知薄弱点（训练中暴露）: {', '.join(observed)}")
             if predicted:
                 parts.append(f"潜在薄弱点（JD分析预测）: {', '.join(predicted)}")
 
     if profile.get("strong_points"):
-        points = ", ".join(s["point"] for s in profile["strong_points"][:5])
-        parts.append(f"强项: {points}")
+        points = ", ".join(
+            p for p in (_clean_point_text(s.get("point")) for s in profile["strong_points"][:5]) if p
+        )
+        if points:
+            parts.append(f"强项: {points}")
 
     if profile.get("communication", {}).get("style"):
         parts.append(f"沟通风格: {profile['communication']['style']}")
