@@ -510,21 +510,20 @@ async def _run_resume_review(session_id: str, user_id: str):
             eval_history=eval_history,
         )
 
+        extraction = await update_profile_after_interview(
+            mode=mode.value,
+            topic=topic,
+            messages=messages,
+            user_id=user_id,
+            scores=scores,
+            session_id=session_id,
+        )
+
         resume_overall = {}
-        try:
-            extraction = await update_profile_after_interview(
-                mode=mode.value,
-                topic=topic,
-                messages=messages,
-                user_id=user_id,
-                scores=scores,
-            )
-            if extraction.get("dimension_scores"):
-                resume_overall["dimension_scores"] = extraction["dimension_scores"]
-            if extraction.get("avg_score"):
-                resume_overall["avg_score"] = extraction["avg_score"]
-        except Exception:
-            logger.exception("Profile update failed for reviewed session %s", session_id)
+        if extraction.get("dimension_scores"):
+            resume_overall["dimension_scores"] = extraction["dimension_scores"]
+        if extraction.get("avg_score"):
+            resume_overall["avg_score"] = extraction["avg_score"]
 
         save_review(session_id, review, scores, weak_points,
                     overall=resume_overall, user_id=user_id)
@@ -609,7 +608,7 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
                 if weak_point and isinstance(score_value, (int, float)):
                     update_weak_point_sr(topic, weak_point, score_value, user_id)
 
-            asyncio.run(_update_drill_profile(topic, overall, scores, len(questions), user_id, merged_weak_points))
+            asyncio.run(_update_drill_profile(session_id, topic, overall, scores, len(questions), user_id, merged_weak_points))
         except Exception:
             logger.exception("Post-review updates failed for drill session %s", session_id)
         _drill_sessions.pop(session_id, None)
@@ -640,7 +639,7 @@ def _end_jd_prep_background(session_id, questions, answers, preview, meta, user_
         _task_status[session_id] = {"status": "done", "type": "jd_review", "user_id": user_id}
 
         try:
-            asyncio.run(_update_job_prep_profile(overall, scores, len(questions), meta, user_id))
+            asyncio.run(_update_job_prep_profile(session_id, overall, scores, len(questions), meta, user_id))
         except Exception:
             logger.exception("Post-review updates failed for JD prep session %s", session_id)
         _job_prep_sessions.pop(session_id, None)
@@ -797,6 +796,7 @@ async def retry_review_generation(
 
 
 async def _update_drill_profile(
+    session_id: str,
     topic: str,
     overall: dict,
     scores: list,
@@ -835,10 +835,12 @@ async def _update_drill_profile(
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
         answer_count=len(scores),
+        behavior_ops=overall.get("behavior_signals", []),
+        session_id=session_id,
     )
 
 
-async def _update_job_prep_profile(overall: dict, scores: list, total_questions: int, meta: dict, user_id: str):
+async def _update_job_prep_profile(session_id: str, overall: dict, scores: list, total_questions: int, meta: dict, user_id: str):
     """Update profile from JD prep evaluation."""
     valid = []
     for score in scores:
@@ -866,6 +868,8 @@ async def _update_job_prep_profile(overall: dict, scores: list, total_questions:
         avg_score=overall.get("avg_score"),
         answer_count=len(valid),
         dimension_scores=overall.get("dimension_scores"),
+        behavior_ops=overall.get("behavior_signals", []),
+        session_id=session_id,
     )
 
 

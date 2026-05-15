@@ -1,11 +1,128 @@
 import { useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
 import { formatShortDate } from "./derive";
 import { MODE_META } from "./meta";
+
+// 折叠区。用于把"次要/旧观察"收纳起来,不挤占主区。
+export function CollapsibleSection({ title, caption, defaultOpen = false, children, badge }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-2xl border border-dashed border-border/60 bg-black/[0.02] dark:bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+      >
+        <div className="flex items-center gap-3">
+          <div>
+            <div className="text-sm font-semibold">{title}</div>
+            {caption && <div className="mt-0.5 text-xs text-dim">{caption}</div>}
+          </div>
+          {badge}
+        </div>
+        <ChevronDown
+          size={16}
+          className={cn("text-dim transition-transform", open && "rotate-180")}
+        />
+      </button>
+      {open && <div className="border-t border-border/40 px-4 py-4">{children}</div>}
+    </div>
+  );
+}
+
+function BehaviorSignalRow({ signal }) {
+  const [expanded, setExpanded] = useState(false);
+  const examples = signal.examples || [];
+
+  let polarityBadge;
+  if (signal.improved) {
+    polarityBadge = <Badge variant="outline">已改善</Badge>;
+  } else if ((signal.polarity || "negative") === "positive") {
+    polarityBadge = <Badge variant="success">优势</Badge>;
+  } else {
+    polarityBadge = <Badge variant="destructive">短板</Badge>;
+  }
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-card/80 px-3.5 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium leading-6">
+            {signal.description || signal.id}
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-dim">
+            {polarityBadge}
+            <span>出现 {signal.times_seen || 1} 次</span>
+            {signal.last_seen && <span>· 最近 {formatShortDate(signal.last_seen)}</span>}
+            <span className="font-mono opacity-60">{signal.id}</span>
+          </div>
+        </div>
+        {examples.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="shrink-0 text-xs font-medium text-primary hover:underline"
+          >
+            {expanded ? "收起证据" : `证据 (${examples.length})`}
+          </button>
+        )}
+      </div>
+      {expanded && examples.length > 0 && (
+        <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+          {examples.map((ex, idx) => (
+            <div key={idx} className="text-xs leading-5 text-dim">
+              <span className="font-mono opacity-70">{formatShortDate(ex.date)}</span>
+              {" — "}
+              {ex.snippet}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 按 namespace 分组渲染 behavior_signals。
+// namespaces 来自 buildBehaviorSignals().namespaces:
+//   [{ key, label, color, negative, positive, improved }, ...]
+export function BehaviorSignalList({ namespaces }) {
+  const populated = (namespaces || []).filter(
+    (ns) =>
+      (ns.negative?.length || 0) +
+        (ns.positive?.length || 0) +
+        (ns.improved?.length || 0) >
+      0
+  );
+  if (populated.length === 0) return null;
+
+  return (
+    <div className="space-y-5">
+      {populated.map((ns) => {
+        const rows = [
+          ...(ns.negative || []),
+          ...(ns.positive || []),
+          ...(ns.improved || []),
+        ];
+        return (
+          <div key={ns.key}>
+            <div className={cn("mb-2 text-xs font-semibold uppercase tracking-wide", ns.color)}>
+              {ns.label}
+            </div>
+            <div className="space-y-2">
+              {rows.map((signal) => (
+                <BehaviorSignalRow key={signal.id} signal={signal} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export function ScoreChart({ history }) {
   if (!history || history.length < 2) return null;
@@ -108,66 +225,48 @@ export function SectionHeader({ icon, title, caption, action }) {
   );
 }
 
-export function TopicPriorityCard({ item, onSelect, variant = "default", label }) {
-  const featured = variant === "featured";
-
+export function TopicPriorityCard({ item, onSelect, label }) {
   return (
     <button
       type="button"
       onClick={() => onSelect(item.topic)}
-      className={cn(
-        "w-full rounded-[24px] border border-primary/15 bg-[linear-gradient(180deg,rgba(245,158,11,0.06),transparent)] text-left transition-all hover:-translate-y-px hover:border-primary/35 hover:shadow-sm dark:bg-[linear-gradient(180deg,rgba(245,158,11,0.08),transparent)]",
-        featured ? "p-6 md:p-7" : "p-5"
-      )}
+      className="group w-full rounded-xl border border-primary/15 bg-[linear-gradient(180deg,rgba(245,158,11,0.04),transparent)] px-3.5 py-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/[0.04] dark:bg-[linear-gradient(180deg,rgba(245,158,11,0.06),transparent)]"
     >
-      {label && (
-        <div className="mb-4 inline-flex rounded-full bg-primary/12 px-3 py-1 text-xs font-medium text-primary">
-          {label}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {label && (
+            <span className="inline-flex shrink-0 rounded-full bg-primary/12 px-2 py-0.5 text-[10px] font-medium text-primary">
+              {label}
+            </span>
+          )}
+          <span className="truncate text-sm font-semibold">{item.topic}</span>
+          {item.weakCount > 0 && (
+            <Badge variant="destructive" className="shrink-0 px-1.5 py-0 text-[10px]">待补{item.weakCount}</Badge>
+          )}
+          {item.strongCount > 0 && (
+            <Badge variant="success" className="shrink-0 px-1.5 py-0 text-[10px]">强项{item.strongCount}</Badge>
+          )}
         </div>
-      )}
-
-      <div className={cn("gap-4", featured ? "flex flex-col sm:flex-row sm:items-start sm:justify-between" : "flex items-start justify-between")}>
-        <div className="min-w-0">
-          <div className={cn("break-words font-semibold", featured ? "text-[28px] leading-tight md:text-[32px]" : "text-lg")}>
-            {item.topic}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {item.weakCount > 0 && <Badge variant="destructive">待补 {item.weakCount}</Badge>}
-            {item.strongCount > 0 && <Badge variant="success">强项 {item.strongCount}</Badge>}
-          </div>
-        </div>
-        <div className="shrink-0 text-right">
-          <div className={cn("font-semibold text-primary", featured ? "text-[28px]" : "text-xl")}>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="text-sm font-semibold text-primary">
             {item.score != null ? `${item.score}/100` : "--"}
-          </div>
-          <div className="mt-1 text-xs text-dim">领域掌握度</div>
+          </span>
+          <ChevronRight size={14} className="text-dim transition-transform group-hover:translate-x-0.5" />
         </div>
       </div>
-
-      <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-border">
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
         <div
           className="h-full rounded-full bg-gradient-to-r from-primary to-orange"
           style={{ width: `${item.score != null ? item.score : 0}%` }}
         />
       </div>
-
-      <div className="mt-4 text-sm leading-6 text-dim">
-        {item.note || item.topWeakness || "该领域已有训练记录，但还没有生成明确总结。"}
-      </div>
-
-      {featured && item.topWeakness && (
-        <div className="mt-4 rounded-2xl border border-border/70 bg-card/84 px-4 py-3">
-          <div className="text-xs font-medium text-dim">当前先补</div>
-          <div className="mt-2 text-sm leading-6">{item.topWeakness}</div>
-        </div>
-      )}
-
-      <div className={cn("mt-4 flex items-center justify-between gap-3 text-xs text-dim", featured && "flex-wrap")}>
-        <span>{item.lastSignal ? `最近信号 ${formatShortDate(item.lastSignal)}` : "已有历史训练记录"}</span>
-        <span className="inline-flex items-center gap-1 font-medium text-primary">
-          查看领域
-          <ChevronRight size={14} />
+      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-dim">
+        <span className="line-clamp-1 flex-1">
+          {item.topWeakness || item.note || "已有训练记录"}
         </span>
+        {item.lastSignal && (
+          <span className="shrink-0 opacity-70">{formatShortDate(item.lastSignal)}</span>
+        )}
       </div>
     </button>
   );
@@ -198,20 +297,29 @@ export function CrossBlockerList({ items }) {
   );
 }
 
+// 表现轴的 namespace 卡。dim 来自 buildBehaviorSignals().namespaces,
+// 字段: { key, label, color, bg, negative: [...], positive: [...], improved: [...] }
+// 每个数组里的元素是 behavior_signal: { id, description, times_seen, last_seen, examples, ... }
 export function PerformanceDimCard({ dim }) {
-  const hasItems = dim.weakCount > 0 || dim.strongCount > 0;
-  if (!hasItems) return null;
+  const negative = dim.negative || [];
+  const positive = dim.positive || [];
+  const improved = dim.improved || [];
+  const hasAny = negative.length + positive.length + improved.length > 0;
+  if (!hasAny) return null;
+
+  const featured = negative[0] || positive[0] || improved[0];
 
   return (
     <div className={cn("rounded-xl border border-border/60 p-3.5", dim.bg)}>
       <div className={cn("text-xs font-semibold", dim.color)}>{dim.label}</div>
-      <div className="mt-2 flex gap-2">
-        {dim.weakCount > 0 && <Badge variant="destructive">{dim.weakCount}</Badge>}
-        {dim.strongCount > 0 && <Badge variant="success">{dim.strongCount}</Badge>}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {negative.length > 0 && <Badge variant="destructive">{negative.length}</Badge>}
+        {positive.length > 0 && <Badge variant="success">+{positive.length}</Badge>}
+        {improved.length > 0 && <Badge variant="outline">改善 {improved.length}</Badge>}
       </div>
-      {dim.items.length > 0 && (
+      {featured && (
         <div className="mt-2.5 text-xs leading-5 text-dim line-clamp-2">
-          {dim.items[0].point}
+          {featured.description || featured.id}
         </div>
       )}
     </div>

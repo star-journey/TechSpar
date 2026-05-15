@@ -300,14 +300,6 @@ http://localhost:5173
 http://localhost:5173/copilot
 ```
 
-### 4. 从旧版迁移
-
-如果你是从无认证旧版升级：
-
-```bash
-python -m backend.migrate
-```
-
 ---
 
 ## 技术栈
@@ -337,22 +329,28 @@ python -m backend.migrate
 
 ---
 
+## 数据迁移（跨电脑同步）
+
+换机器或重装时，用 `scripts/` 下的脚本把面试历史、复盘、画像、知识库一起带走：
+
+```bash
+# 旧机器：导出（生成 techspar-backup-<timestamp>.tar.gz）
+python3 scripts/export_data.py
+
+# 新机器：先按 README 部署好，再导入
+python3 scripts/import_data.py techspar-backup-<timestamp>.tar.gz
+```
+
+打包内容：`data/interviews.db` + `data/users/<user_id>/`（画像/简历/知识库/题库/训练偏好）。
+**不打包**：`.index_cache/`（导入后会自动重建）、`langgraph_checkpoints*`（运行时状态）、`.env`（API key 等密钥需手工同步）。
+
+可选参数：
+- `--user-id <id>`：仅导出指定用户（多用户部署时使用）
+- `--db-strategy overwrite`：导入时同一 `session_id` 用归档版本覆盖本地（默认保留本地）
+- `--overwrite-files`：导入时覆盖 `data/users/` 已存在的文件（默认保留本地）
+
+---
+
 ## License
 
 CC BY-NC 4.0
-
----
-
-<div align="center">
-
-**If you find this project useful, please give it a star.**
-
-[![Star History Chart](https://api.star-history.com/svg?repos=AnnaSuSu/TechSpar&type=Date)](https://star-history.com/#AnnaSuSu/TechSpar&Date)
-
-</div>
-
----
-
-## 致谢
-
-感谢 [LINUX DO](https://linux.do/) 社区的支持。
