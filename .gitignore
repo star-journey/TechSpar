@@ -41,3 +41,6 @@ local_tools/
 
 # Internal design docs
 design/
+
+# Claude Code local state (worktrees, settings)
+.claude/

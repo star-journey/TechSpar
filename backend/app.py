@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import (
     auth,
     copilot,
+    data_migration,
     history,
     interview,
     knowledge,
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(interview.router)
     app.include_router(knowledge.router)
     app.include_router(history.router)
+    app.include_router(data_migration.router)
     app.include_router(copilot.rest_router)
     app.include_router(copilot.ws_router)
     return app

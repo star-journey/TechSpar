@@ -331,7 +331,7 @@ http://localhost:5173/copilot
 
 ## 数据迁移（跨电脑同步）
 
-换机器或重装时，用 `scripts/` 下的脚本把面试历史、复盘、画像、知识库一起带走：
+换机器或重装时，可以在 **设置 → 数据迁移** 卡片里点导出 / 导入；或用 `scripts/` 下的脚本（适合脚本化、批量、跨用户）：
 
 ```bash
 # 旧机器：导出（生成 techspar-backup-<timestamp>.tar.gz）
@@ -340,6 +340,8 @@ python3 scripts/export_data.py
 # 新机器：先按 README 部署好，再导入
 python3 scripts/import_data.py techspar-backup-<timestamp>.tar.gz
 ```
+
+UI 导入会把归档中的数据全部归到当前登录账户（即使原 `user_id` 不同），适合个人换机；CLI 默认保留原 `user_id`，适合管理员级整库迁移。
 
 打包内容：`data/interviews.db` + `data/users/<user_id>/`（画像/简历/知识库/题库/训练偏好）。
 **不打包**：`.index_cache/`（导入后会自动重建）、`langgraph_checkpoints*`（运行时状态）、`.env`（API key 等密钥需手工同步）。

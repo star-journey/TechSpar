@@ -1,5 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Server, Sliders, Eye, EyeOff, Loader2, Check, Mic, Square, Trash2 } from "lucide-react";
+import {
+  Server,
+  Sliders,
+  Eye,
+  EyeOff,
+  Loader2,
+  Check,
+  Mic,
+  Square,
+  Trash2,
+  Database,
+  Download,
+  Upload,
+  AlertTriangle,
+} from "lucide-react";
 import { getSettings, updateSettings } from "../api/interview";
 import {
   getVoiceprintStatus,
@@ -7,6 +21,7 @@ import {
   enrollVoiceprint,
   deleteVoiceprintEnrollment,
 } from "../api/voiceprint";
+import { exportData, importData } from "../api/dataMigration";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,6 +133,17 @@ export default function Settings() {
   const vpChunksRef = useRef([]);
   const vpInputRateRef = useRef(VP_SAMPLE_RATE);
   const vpTimerRef = useRef(null);
+
+  // 数据迁移状态
+  const [exporting, setExporting] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importDbStrategy, setImportDbStrategy] = useState("skip");
+  const [importOverwriteFiles, setImportOverwriteFiles] = useState(false);
+  const [importConfirming, setImportConfirming] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState("");
+  const [migrationError, setMigrationError] = useState("");
+  const importFileInputRef = useRef(null);
 
   useEffect(() => {
     getSettings()
@@ -258,6 +284,57 @@ export default function Settings() {
       setVpMessage("删除失败：" + (err.message || "未知错误"));
     } finally {
       setVpBusy(false);
+    }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    setMigrationError("");
+    setMigrationMessage("");
+    try {
+      const { filename, size } = await exportData();
+      const sizeMb = (size / 1024 / 1024).toFixed(2);
+      setMigrationMessage(`已下载 ${filename} (${sizeMb} MB)`);
+    } catch (err) {
+      setMigrationError("导出失败：" + (err.message || "未知错误"));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImportFileChange = (e) => {
+    const f = e.target.files?.[0] || null;
+    setImportFile(f);
+    setImportConfirming(false);
+    setMigrationMessage("");
+    setMigrationError("");
+  };
+
+  const handleImportClick = () => {
+    if (!importFile) return;
+    setImportConfirming(true);
+  };
+
+  const handleImportConfirm = async () => {
+    if (!importFile) return;
+    setImportBusy(true);
+    setMigrationError("");
+    setMigrationMessage("");
+    try {
+      const r = await importData(importFile, {
+        dbStrategy: importDbStrategy,
+        overwriteFiles: importOverwriteFiles,
+      });
+      setMigrationMessage(
+        `已导入：会话写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。建议刷新页面以加载新数据。`
+      );
+      setImportFile(null);
+      setImportConfirming(false);
+      if (importFileInputRef.current) importFileInputRef.current.value = "";
+    } catch (err) {
+      setMigrationError("导入失败：" + (err.message || "未知错误"));
+    } finally {
+      setImportBusy(false);
     }
   };
 
@@ -567,6 +644,130 @@ export default function Settings() {
                   </span>
                 </span>
               </label>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Data Migration */}
+        <Card className="overflow-hidden border-border/80 bg-card/76">
+          <CardContent className="p-5 md:p-7">
+            <div className="flex items-center gap-2 mb-1">
+              <Database size={16} className="text-primary" />
+              <span className="text-base font-semibold">数据迁移</span>
+            </div>
+            <div className="text-[13px] text-dim mb-5">
+              备份与跨机器迁移面试历史、复盘、画像、简历、知识库、题库与训练偏好。LLM/声纹凭据等环境配置不在此范围。
+            </div>
+
+            <div className="space-y-5">
+              {/* Export */}
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <div className="text-sm font-medium mb-0.5">导出当前账户数据</div>
+                    <div className="text-[12px] text-dim/70">打包为 .tar.gz 下载到本地</div>
+                  </div>
+                  <Button variant="outline" disabled={exporting} onClick={handleExport}>
+                    {exporting ? (
+                      <Loader2 size={14} className="mr-1.5 animate-spin" />
+                    ) : (
+                      <Download size={14} className="mr-1.5" />
+                    )}
+                    {exporting ? "导出中..." : "导出"}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Import */}
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 space-y-4">
+                <div>
+                  <div className="text-sm font-medium mb-0.5">从备份导入</div>
+                  <div className="text-[12px] text-dim/70">归档中的数据将归到当前登录账户</div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    ref={importFileInputRef}
+                    type="file"
+                    accept=".gz,.tgz,application/gzip,application/x-gzip"
+                    onChange={handleImportFileChange}
+                    className="text-[12px] text-dim file:mr-3 file:rounded-lg file:border-0 file:bg-card file:px-3 file:py-1.5 file:text-sm file:text-text hover:file:bg-hover"
+                  />
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className={labelClass}>会话冲突策略</Label>
+                    <div className="flex gap-2">
+                      {[
+                        { value: "skip", label: "保留本地" },
+                        { value: "overwrite", label: "用归档覆盖" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => setImportDbStrategy(opt.value)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-lg border text-[13px] transition-all",
+                            importDbStrategy === opt.value
+                              ? "bg-primary/12 text-primary border-primary/50 font-medium"
+                              : "border-border bg-card/80 text-dim hover:text-text hover:bg-hover"
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className={labelClass}>文件冲突</Label>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={importOverwriteFiles}
+                        onChange={(e) => setImportOverwriteFiles(e.target.checked)}
+                        className="accent-primary"
+                      />
+                      <span className="text-[13px] text-dim">用归档文件覆盖本地</span>
+                    </label>
+                  </div>
+                </div>
+
+                {importConfirming ? (
+                  <div className="rounded-lg border border-amber-400/40 bg-amber-400/8 px-3 py-3">
+                    <div className="flex items-start gap-2 mb-2.5">
+                      <AlertTriangle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                      <div className="text-[13px]">
+                        将把 <span className="font-medium">{importFile?.name}</span> 合并到当前账户。
+                        {importDbStrategy === "overwrite" && "本地同 ID 的会话会被覆盖。"}
+                        {importOverwriteFiles && "用户文件也会被覆盖。"}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" disabled={importBusy} onClick={() => setImportConfirming(false)}>
+                        取消
+                      </Button>
+                      <Button variant="gradient" disabled={importBusy} onClick={handleImportConfirm}>
+                        {importBusy && <Loader2 size={14} className="mr-1.5 animate-spin" />}
+                        {importBusy ? "导入中..." : "确认导入"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <Button variant="outline" disabled={!importFile || importBusy} onClick={handleImportClick}>
+                      <Upload size={14} className="mr-1.5" />
+                      导入
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {(migrationMessage || migrationError) && (
+                <div className={cn("text-[12px]", migrationError ? "text-red" : "text-dim")}>
+                  {migrationError || migrationMessage}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
