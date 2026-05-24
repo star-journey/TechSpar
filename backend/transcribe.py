@@ -4,7 +4,10 @@
     base64 data URI → DashScope qwen3-asr-flash 同步 chat/completions，零 OSS。
 
 长音频（录音复盘，可能几十分钟）：
-    bytes → 阿里云 OSS（signed URL, 1h 过期）→ DashScope qwen3-asr-flash-filetrans 异步 + 轮询。
+    bytes → 公网 URL → DashScope qwen3-asr-flash-filetrans 异步 + 轮询。
+    公网 URL 来源二选一：
+      - 配置 PUBLIC_BASE_URL → 本机落盘 + HMAC 签名（自有域名链路）
+      - 否则 → 阿里云 OSS signed URL（1h 过期）
 """
 import base64
 import uuid
@@ -117,6 +120,14 @@ def _upload_to_oss(audio_bytes: bytes, suffix: str) -> str:
     return url
 
 
+def _publish_locally(audio_bytes: bytes, suffix: str) -> str:
+    """落盘到本机并返回带 HMAC 签名的公网 URL，省掉 OSS 依赖。"""
+    from backend.public_url import build_signed_url, save_audio_blob
+
+    key = save_audio_blob(audio_bytes, suffix)
+    return build_signed_url(key)
+
+
 def transcribe_long(audio_bytes: bytes, suffix: str = ".webm") -> str:
     """长音频异步转写：阿里云 OSS → DashScope qwen3-asr-flash-filetrans 轮询。
 
@@ -127,7 +138,10 @@ def transcribe_long(audio_bytes: bytes, suffix: str = ".webm") -> str:
     if not api_key:
         raise RuntimeError("DASHSCOPE_API_KEY not configured")
 
-    file_url = _upload_to_oss(audio_bytes, suffix)
+    if settings.public_base_url:
+        file_url = _publish_locally(audio_bytes, suffix)
+    else:
+        file_url = _upload_to_oss(audio_bytes, suffix)
 
     headers = {
         "Authorization": f"Bearer {api_key}",

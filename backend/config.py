@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     aliyun_oss_bucket: str = ""
     aliyun_oss_endpoint: str = ""  # e.g. "oss-cn-shanghai.aliyuncs.com"
 
+    # Self-hosted public URL — 配置后替代 OSS 为 DashScope filetrans 提供拉取 URL。
+    # 形如 "https://your.domain.com"，不带尾斜杠。
+    public_base_url: str = ""
+    public_url_secret: str = ""  # HMAC 密钥；为空则复用 jwt_secret
+    public_audio_ttl_seconds: int = 3600  # 签名 URL 有效期
+    public_audio_retain_seconds: int = 86400  # 磁盘文件保留时长
+
     # Paths
     base_dir: Path = Path(__file__).resolve().parent.parent
     resume_path: Path = Path(__file__).resolve().parent.parent / "data" / "resume"
@@ -88,6 +95,14 @@ class Settings(BaseSettings):
 
     def user_settings_path(self, user_id: str) -> Path:
         return self.user_data_dir(user_id) / "settings.json"
+
+    def public_audio_dir(self) -> Path:
+        path = self.base_dir / "data" / "public_audio"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def effective_public_url_secret(self) -> str:
+        return self.public_url_secret or self.jwt_secret
 
     @property
     def effective_dashscope_api_key(self) -> str:
