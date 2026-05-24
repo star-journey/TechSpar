@@ -24,7 +24,7 @@ async def recording_transcribe(
     mode: str = Form("dual"),
     user_id: str = Depends(get_current_user),
 ):
-    """Transcribe recording audio via DashScope ASR."""
+    """Transcribe recording audio via the configured STT provider."""
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio file.")
@@ -32,9 +32,10 @@ async def recording_transcribe(
     suffix = "." + (file.filename or "audio.webm").rsplit(".", 1)[-1]
 
     try:
-        from backend.transcribe import transcribe_long
+        from backend.config import settings
+        from backend.stt import get_provider
 
-        text = transcribe_long(audio_bytes, suffix=suffix)
+        text = get_provider(settings.stt_provider).transcribe(audio_bytes, suffix=suffix)
         return {"transcript": text, "segments": []}
     except Exception as exc:
         raise HTTPException(500, f"Transcription failed: {exc}")

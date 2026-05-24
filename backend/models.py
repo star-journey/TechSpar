@@ -170,10 +170,30 @@ class LLMSettings(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
 
+class STTSettings(BaseModel):
+    """Global STT provider configuration (hot-reloadable)."""
+    provider: str = "dashscope"  # dashscope | azure | soniox | elevenlabs | qwencloud
+    # DashScope (含短/长两条链路)
+    dashscope_api_key: str = ""
+    # Azure Speech Fast Transcription
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+    azure_speech_locales: str = "zh-CN,en-US"
+    # Soniox
+    soniox_api_key: str = ""
+    soniox_model: str = "stt-async-v4"
+    # ElevenLabs
+    elevenlabs_api_key: str = ""
+    elevenlabs_model: str = "scribe_v2"
+    # QwenCloud (DashScope International)
+    qwencloud_api_key: str = ""
+
+
 class SettingsResponse(BaseModel):
     """Combined response for GET/PUT /settings."""
     llm: LLMSettings
     training: UserSettings
+    stt: STTSettings = Field(default_factory=STTSettings)
 
 
 class VoiceprintCredentials(BaseModel):

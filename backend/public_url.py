@@ -17,6 +17,17 @@ from backend.config import settings
 logger = logging.getLogger("uvicorn")
 
 
+AUDIO_MIME = {
+    ".webm": "audio/webm",
+    ".mp3": "audio/mp3",
+    ".wav": "audio/wav",
+    ".m4a": "audio/m4a",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+}
+
+
 def _sign(key: str, expires: int) -> str:
     secret = settings.effective_public_url_secret().encode()
     msg = f"{key}|{expires}".encode()

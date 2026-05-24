@@ -249,6 +249,31 @@ ALIYUN_OSS_BUCKET=
 ALIYUN_OSS_ENDPOINT=oss-cn-shanghai.aliyuncs.com
 ```
 
+如果你想换用其他 STT 厂商（Azure / Soniox / ElevenLabs / QwenCloud），可以在 `.env` 里设置 `STT_PROVIDER`，或登录后在「设置 → 语音转写（STT）」卡片里热切换：
+
+```env
+# dashscope | azure | soniox | elevenlabs | qwencloud
+STT_PROVIDER=dashscope
+
+# Azure Speech Fast Transcription（本地直传，无需公网 URL）
+AZURE_SPEECH_KEY=
+AZURE_SPEECH_REGION=eastus
+AZURE_SPEECH_LOCALES=zh-CN,en-US
+
+# Soniox（异步，原生支持 m4a）
+SONIOX_API_KEY=
+SONIOX_MODEL=stt-async-v4
+
+# ElevenLabs（同步，原生支持 m4a）
+ELEVENLABS_API_KEY=
+ELEVENLABS_MODEL=scribe_v2
+
+# QwenCloud（DashScope 国际版，仍需公网 URL）
+QWENCLOUD_API_KEY=
+```
+
+> Azure 等少数厂商不直接支持 `.m4a` 输入，后端会用 `ffmpeg` 透明转成 wav 16k mono 再上传。**部署环境需要安装 ffmpeg**（Debian/Ubuntu：`apt-get install -y ffmpeg`，Alpine：`apk add ffmpeg`）。如果一直只用 DashScope / Soniox / ElevenLabs，可以不装。
+
 `.env.example` 已经补齐了完整示例，可直接按需删改。
 
 ### 2. Docker 启动

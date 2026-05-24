@@ -13,6 +13,7 @@ import {
   Download,
   Upload,
   AlertTriangle,
+  Languages,
 } from "lucide-react";
 import { getSettings, updateSettings } from "../api/interview";
 import {
@@ -100,6 +101,14 @@ const DIVERGENCE_OPTIONS = [
   { value: 5, label: "全面探索", description: "100% 探索未涉猎过的新知识领域，发掘潜在盲区" },
 ];
 
+const STT_PROVIDERS = [
+  { value: "dashscope", label: "DashScope", description: "阿里 qwen3-asr-flash，短音频 base64 同步 / 长音频走公网 URL" },
+  { value: "azure", label: "Azure Speech", description: "Fast Transcription 同步上传，本地直传，无需公网 URL" },
+  { value: "soniox", label: "Soniox", description: "异步 STT，本地直传，原生支持 m4a" },
+  { value: "elevenlabs", label: "ElevenLabs", description: "scribe_v2 同步 STT，本地直传，文件 ≤3GB" },
+  { value: "qwencloud", label: "QwenCloud", description: "DashScope 国际版（dashscope-intl），仍需公网 URL" },
+];
+
 export default function Settings() {
   const [apiBase, setApiBase] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -125,6 +134,19 @@ export default function Settings() {
   const [vpMessage, setVpMessage] = useState("");
   const [vpRecording, setVpRecording] = useState(false);
   const [vpRecordingSec, setVpRecordingSec] = useState(0);
+
+  // STT (speech-to-text) 状态
+  const [sttProvider, setSttProvider] = useState("dashscope");
+  const [sttDashscopeKey, setSttDashscopeKey] = useState("");
+  const [sttAzureKey, setSttAzureKey] = useState("");
+  const [sttAzureRegion, setSttAzureRegion] = useState("");
+  const [sttAzureLocales, setSttAzureLocales] = useState("zh-CN,en-US");
+  const [sttSonioxKey, setSttSonioxKey] = useState("");
+  const [sttSonioxModel, setSttSonioxModel] = useState("stt-async-v4");
+  const [sttElevenKey, setSttElevenKey] = useState("");
+  const [sttElevenModel, setSttElevenModel] = useState("scribe_v2");
+  const [sttQwencloudKey, setSttQwencloudKey] = useState("");
+  const [sttShowKey, setSttShowKey] = useState(false);
 
   const vpStreamRef = useRef(null);
   const vpCtxRef = useRef(null);
@@ -156,6 +178,17 @@ export default function Settings() {
         setDivergence(data.training.divergence ?? 3);
         setDrillGenerationTimeoutSeconds(data.training.drill_generation_timeout_seconds ?? 300);
         setGenerateRefOnSubmit(!!data.training.generate_reference_answers_on_submit);
+        const stt = data.stt || {};
+        setSttProvider(stt.provider || "dashscope");
+        setSttDashscopeKey(stt.dashscope_api_key || "");
+        setSttAzureKey(stt.azure_speech_key || "");
+        setSttAzureRegion(stt.azure_speech_region || "");
+        setSttAzureLocales(stt.azure_speech_locales || "zh-CN,en-US");
+        setSttSonioxKey(stt.soniox_api_key || "");
+        setSttSonioxModel(stt.soniox_model || "stt-async-v4");
+        setSttElevenKey(stt.elevenlabs_api_key || "");
+        setSttElevenModel(stt.elevenlabs_model || "scribe_v2");
+        setSttQwencloudKey(stt.qwencloud_api_key || "");
       })
       .catch((err) => setError("加载设置失败: " + err.message))
       .finally(() => setLoading(false));
@@ -350,6 +383,18 @@ export default function Settings() {
           drill_generation_timeout_seconds: drillGenerationTimeoutSeconds,
           generate_reference_answers_on_submit: generateRefOnSubmit,
         },
+        stt: {
+          provider: sttProvider,
+          dashscope_api_key: sttDashscopeKey,
+          azure_speech_key: sttAzureKey,
+          azure_speech_region: sttAzureRegion,
+          azure_speech_locales: sttAzureLocales,
+          soniox_api_key: sttSonioxKey,
+          soniox_model: sttSonioxModel,
+          elevenlabs_api_key: sttElevenKey,
+          elevenlabs_model: sttElevenModel,
+          qwencloud_api_key: sttQwencloudKey,
+        },
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -442,6 +487,199 @@ export default function Settings() {
                 />
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* STT (Speech-to-Text) Provider */}
+        <Card className="overflow-hidden border-border/80 bg-card/76">
+          <CardContent className="p-5 md:p-7">
+            <div className="flex items-center gap-2 mb-1">
+              <Languages size={16} className="text-primary" />
+              <span className="text-base font-semibold">语音转写（STT）</span>
+            </div>
+            <div className="text-[13px] text-dim mb-5">
+              答题语音输入与录音复盘共用此 provider。Azure / Soniox / ElevenLabs 本地直传无需公网 URL；DashScope / QwenCloud 长音频走自托管签名链路或 OSS。
+            </div>
+
+            <div className="space-y-2.5 mb-5">
+              <Label className={labelClass}>Provider</Label>
+              <div className="flex flex-wrap gap-2">
+                {STT_PROVIDERS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSttProvider(opt.value)}
+                    className={cn(
+                      "px-4 py-2 rounded-xl border text-sm transition-all",
+                      sttProvider === opt.value
+                        ? "bg-primary/12 text-primary border-primary/50 font-medium"
+                        : "border-border bg-card/80 text-dim hover:text-text hover:bg-hover"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <div className="text-[12px] text-dim/70 mt-1 min-h-[18px]">
+                {STT_PROVIDERS.find((o) => o.value === sttProvider)?.description}
+              </div>
+            </div>
+
+            {sttProvider === "dashscope" && (
+              <div className="space-y-2">
+                <Label className={labelClass}>DashScope API Key</Label>
+                <div className="relative">
+                  <Input
+                    className={cn(inputClass, "pr-11")}
+                    type={sttShowKey ? "text" : "password"}
+                    placeholder="sk-..."
+                    value={sttDashscopeKey}
+                    onChange={(e) => setSttDashscopeKey(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                    onClick={() => setSttShowKey((v) => !v)}
+                  >
+                    {sttShowKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <div className="text-[12px] text-dim/60">长音频仍需配置 PUBLIC_BASE_URL 或阿里云 OSS（环境变量层面配置）</div>
+              </div>
+            )}
+
+            {sttProvider === "azure" && (
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className={labelClass}>Region 或资源域名</Label>
+                    <Input
+                      className={inputClass}
+                      placeholder="例：eastus 或 myresource.cognitiveservices.azure.com"
+                      value={sttAzureRegion}
+                      onChange={(e) => setSttAzureRegion(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className={labelClass}>Locales</Label>
+                    <Input
+                      className={inputClass}
+                      placeholder="zh-CN,en-US"
+                      value={sttAzureLocales}
+                      onChange={(e) => setSttAzureLocales(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className={labelClass}>Subscription Key</Label>
+                  <div className="relative">
+                    <Input
+                      className={cn(inputClass, "pr-11")}
+                      type={sttShowKey ? "text" : "password"}
+                      placeholder="Ocp-Apim-Subscription-Key"
+                      value={sttAzureKey}
+                      onChange={(e) => setSttAzureKey(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                      onClick={() => setSttShowKey((v) => !v)}
+                    >
+                      {sttShowKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <div className="text-[12px] text-dim/60">m4a / mp4 会由 ffmpeg 自动转 wav 再上传（服务器需安装 ffmpeg）</div>
+                </div>
+              </div>
+            )}
+
+            {sttProvider === "soniox" && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <Label className={labelClass}>Soniox API Key</Label>
+                  <div className="relative">
+                    <Input
+                      className={cn(inputClass, "pr-11")}
+                      type={sttShowKey ? "text" : "password"}
+                      value={sttSonioxKey}
+                      onChange={(e) => setSttSonioxKey(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                      onClick={() => setSttShowKey((v) => !v)}
+                    >
+                      {sttShowKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className={labelClass}>Model</Label>
+                  <Input
+                    className={inputClass}
+                    placeholder="stt-async-v4"
+                    value={sttSonioxModel}
+                    onChange={(e) => setSttSonioxModel(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {sttProvider === "elevenlabs" && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <Label className={labelClass}>ElevenLabs API Key</Label>
+                  <div className="relative">
+                    <Input
+                      className={cn(inputClass, "pr-11")}
+                      type={sttShowKey ? "text" : "password"}
+                      placeholder="xi-api-key"
+                      value={sttElevenKey}
+                      onChange={(e) => setSttElevenKey(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                      onClick={() => setSttShowKey((v) => !v)}
+                    >
+                      {sttShowKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className={labelClass}>Model</Label>
+                  <Input
+                    className={inputClass}
+                    placeholder="scribe_v2"
+                    value={sttElevenModel}
+                    onChange={(e) => setSttElevenModel(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {sttProvider === "qwencloud" && (
+              <div className="space-y-2">
+                <Label className={labelClass}>QwenCloud API Key</Label>
+                <div className="relative">
+                  <Input
+                    className={cn(inputClass, "pr-11")}
+                    type={sttShowKey ? "text" : "password"}
+                    placeholder="留空则回落到 DashScope key"
+                    value={sttQwencloudKey}
+                    onChange={(e) => setSttQwencloudKey(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                    onClick={() => setSttShowKey((v) => !v)}
+                  >
+                    {sttShowKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <div className="text-[12px] text-dim/60">QwenCloud 仅接受公网 URL，需配置 PUBLIC_BASE_URL 或阿里云 OSS</div>
+              </div>
+            )}
           </CardContent>
         </Card>
 

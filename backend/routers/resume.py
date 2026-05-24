@@ -55,16 +55,16 @@ async def upload_resume(file: UploadFile = File(...), user_id: str = Depends(get
 
 @router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
-    """Transcribe short audio clip to text via DashScope ASR."""
+    """Transcribe short audio clip to text via the configured STT provider."""
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio file.")
 
     try:
-        from backend.transcribe import transcribe_short
+        from backend.stt import get_provider
 
         suffix = "." + (file.filename or "audio.webm").rsplit(".", 1)[-1]
-        text = transcribe_short(audio_bytes, suffix=suffix)
+        text = get_provider(settings.stt_provider).transcribe(audio_bytes, suffix=suffix)
         return {"text": text}
     except Exception as exc:
         raise HTTPException(500, f"Transcription failed: {exc}")

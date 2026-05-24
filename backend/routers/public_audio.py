@@ -8,8 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from backend.public_url import resolve_safe_path, verify_signature
-from backend.transcribe import _AUDIO_MIME
+from backend.public_url import AUDIO_MIME, resolve_safe_path, verify_signature
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter(prefix="/public")
@@ -25,5 +24,5 @@ async def get_public_audio(key: str, expires: int, sig: str):
         raise HTTPException(404, "not found")
 
     suffix = Path(key).suffix.lower()
-    media_type = _AUDIO_MIME.get(suffix, "application/octet-stream")
+    media_type = AUDIO_MIME.get(suffix, "application/octet-stream")
     return FileResponse(path, media_type=media_type)

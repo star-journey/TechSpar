@@ -22,8 +22,28 @@ class Settings(BaseSettings):
     embedding_model: str = ""  # deprecated fallback for EMBEDDING_MODEL
     openai_embedding_max_batch_size: int = 64  # max texts per API call
 
+    # STT (speech-to-text) provider selection
+    # 可选值: dashscope | azure | soniox | elevenlabs | qwencloud
+    stt_provider: str = "dashscope"
+
     # DashScope ASR (speech-to-text, batch transcription)
     dashscope_api_key: str = ""
+
+    # Azure Speech (Fast Transcription)
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""  # 例 "eastus"，或直接填资源域名
+    azure_speech_locales: str = "zh-CN,en-US"  # 逗号分隔
+
+    # Soniox (async transcription)
+    soniox_api_key: str = ""
+    soniox_model: str = "stt-async-v4"
+
+    # ElevenLabs Speech-to-Text
+    elevenlabs_api_key: str = ""
+    elevenlabs_model: str = "scribe_v2"
+
+    # QwenCloud (DashScope International) — host = dashscope-intl.aliyuncs.com
+    qwencloud_api_key: str = ""
 
     # Copilot — 独立 LLM 配置（可选，不填则 fallback 到主 LLM）
     copilot_api_base: str = ""
