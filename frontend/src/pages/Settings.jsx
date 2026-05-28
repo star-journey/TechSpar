@@ -14,6 +14,7 @@ import {
   Upload,
   AlertTriangle,
   Boxes,
+  UserCog,
 } from "lucide-react";
 import { getSettings, updateSettings } from "../api/interview";
 import {
@@ -118,6 +119,9 @@ export default function Settings() {
   const [embLocalModel, setEmbLocalModel] = useState("");
   const [embLocalPath, setEmbLocalPath] = useState("");
   const [showEmbKey, setShowEmbKey] = useState(false);
+
+  // 账户/系统配置（全局）
+  const [allowRegistration, setAllowRegistration] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -148,12 +152,14 @@ export default function Settings() {
   const embeddingRef = useRef(null);
   const voiceprintRef = useRef(null);
   const trainingRef = useRef(null);
+  const accountRef = useRef(null);
   const migrationRef = useRef(null);
   const sectionRefs = {
     llm: llmRef,
     embedding: embeddingRef,
     voiceprint: voiceprintRef,
     training: trainingRef,
+    account: accountRef,
     migration: migrationRef,
   };
   const scrollSpyLock = useRef(0);
@@ -183,6 +189,7 @@ export default function Settings() {
         setEmbApiModel(emb.api_model || "");
         setEmbLocalModel(emb.local_model || "");
         setEmbLocalPath(emb.local_path || "");
+        setAllowRegistration(Boolean(data.system?.allow_registration));
         setNumQuestions(data.training.num_questions ?? 10);
         setDivergence(data.training.divergence ?? 3);
       })
@@ -422,6 +429,7 @@ export default function Settings() {
           local_model: embLocalModel,
           local_path: embLocalPath,
         },
+        system: { allow_registration: allowRegistration },
         training: { num_questions: numQuestions, divergence },
       });
       setSaved(true);
@@ -449,6 +457,7 @@ export default function Settings() {
     { id: "embedding", label: "Embedding", icon: Boxes },
     { id: "voiceprint", label: "声纹识别", icon: Mic },
     { id: "training", label: "训练参数", icon: Sliders },
+    { id: "account", label: "账户", icon: UserCog },
     { id: "migration", label: "数据迁移", icon: Database },
   ];
 
@@ -847,6 +856,43 @@ export default function Settings() {
           </CardContent>
         </Card>
 
+        {/* Account / System */}
+        <Card ref={accountRef} data-tab-id="account" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
+          <CardContent className="p-5 md:p-7">
+            <div className="flex items-center gap-2 mb-1">
+              <UserCog size={16} className="text-primary" />
+              <span className="text-base font-semibold">账户</span>
+            </div>
+            <div className="text-[13px] text-dim mb-5">控制谁能进入系统。保存后立即生效。</div>
+
+            <label className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-background/40 px-4 py-4 cursor-pointer select-none">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">允许新用户注册</div>
+                <div className="text-[12px] text-dim/70 mt-1 leading-5">
+                  关闭后登录页隐藏注册入口，只有 DEFAULT_EMAIL/PASSWORD（或已注册账户）能登录。建议自用部署关闭。
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={allowRegistration}
+                onClick={() => setAllowRegistration((v) => !v)}
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 mt-0.5",
+                  allowRegistration ? "bg-primary" : "bg-border"
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200",
+                    allowRegistration ? "translate-x-5" : "translate-x-0.5"
+                  )}
+                />
+              </button>
+            </label>
+          </CardContent>
+        </Card>
+
         {/* Data Migration */}
         <Card ref={migrationRef} data-tab-id="migration" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
           <CardContent className="p-5 md:p-7">
@@ -981,7 +1027,7 @@ export default function Settings() {
             <span className="text-sm text-red">{error}</span>
           ) : (
             <span className="text-[12px] text-dim/70">
-              保存 LLM 服务 + Embedding + 训练参数。声纹与数据迁移各自独立保存。
+              保存 LLM + Embedding + 训练参数 + 账户。声纹与数据迁移各自独立保存。
             </span>
           )}
           <Button variant="gradient" className="px-8" onClick={handleSave} disabled={saving}>

@@ -179,10 +179,16 @@ class EmbeddingSettings(BaseModel):
     local_path: str = ""
 
 
+class SystemSettings(BaseModel):
+    """Global system flags."""
+    allow_registration: bool = False
+
+
 class SettingsResponse(BaseModel):
     """Combined response for GET/PUT /settings."""
     llm: LLMSettings
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    system: SystemSettings = Field(default_factory=SystemSettings)
     training: UserSettings
 
 

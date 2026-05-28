@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from backend.auth import get_current_user
 from backend.config import settings
-from backend.models import EmbeddingSettings, LLMSettings, SettingsResponse
+from backend.models import EmbeddingSettings, LLMSettings, SettingsResponse, SystemSettings
 from backend.storage.user_settings import load_user_settings, save_user_settings
 
 router = APIRouter(prefix="/api")
@@ -27,8 +27,9 @@ def get_user_settings(user_id: str = Depends(get_current_user)):
         local_model=settings.local_embedding_model,
         local_path=settings.local_embedding_path,
     )
+    system = SystemSettings(allow_registration=settings.allow_registration)
     training = load_user_settings(user_id)
-    return SettingsResponse(llm=llm, embedding=embedding, training=training)
+    return SettingsResponse(llm=llm, embedding=embedding, system=system, training=training)
 
 
 @router.put("/settings")
@@ -51,6 +52,8 @@ def put_user_settings(payload: SettingsResponse, user_id: str = Depends(get_curr
     settings.local_embedding_model = emb.local_model
     settings.local_embedding_path = emb.local_path
     _reset_embedding_singleton()
+
+    settings.allow_registration = payload.system.allow_registration
 
     save_user_settings(payload.training, user_id)
     return {"ok": True}
