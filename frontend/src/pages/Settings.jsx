@@ -15,8 +15,9 @@ import {
   AlertTriangle,
   Boxes,
   UserCog,
+  RotateCw,
 } from "lucide-react";
-import { getSettings, updateSettings } from "../api/interview";
+import { getSettings, updateSettings, rebuildEmbeddingIndex } from "../api/interview";
 import {
   getVoiceprintStatus,
   putVoiceprintCredentials,
@@ -111,7 +112,7 @@ export default function Settings() {
   const [divergence, setDivergence] = useState(3);
   const [showKey, setShowKey] = useState(false);
 
-  // Embedding 配置（全局，hot-reload）
+  // Embedding 配置（每用户，hot-reload；空字段继承全局默认）
   const [embBackend, setEmbBackend] = useState("");  // "" | api | local
   const [embApiBase, setEmbApiBase] = useState("");
   const [embApiKey, setEmbApiKey] = useState("");
@@ -123,6 +124,12 @@ export default function Settings() {
   // 账户/系统配置（全局，仅 admin 可见）
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // 重建向量索引（手动按钮；换 embedding 后弹警告提醒）
+  const [needsReindex, setNeedsReindex] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexDone, setReindexDone] = useState(false);
+  const [reindexError, setReindexError] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -421,7 +428,7 @@ export default function Settings() {
     setSaving(true);
     setError("");
     try {
-      await updateSettings({
+      const res = await updateSettings({
         llm: { api_base: apiBase, api_key: apiKey, model, temperature },
         embedding: {
           backend: embBackend,
@@ -434,12 +441,32 @@ export default function Settings() {
         system: { allow_registration: allowRegistration },
         training: { num_questions: numQuestions, divergence },
       });
+      if (res?.embedding_changed) {
+        setNeedsReindex(true);
+        setReindexDone(false);
+        setReindexError("");
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       setError("保存失败: " + err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRebuildIndex = async () => {
+    setReindexing(true);
+    setReindexError("");
+    try {
+      await rebuildEmbeddingIndex();
+      setNeedsReindex(false);
+      setReindexDone(true);
+      setTimeout(() => setReindexDone(false), 3000);
+    } catch (err) {
+      setReindexError("重建失败: " + err.message);
+    } finally {
+      setReindexing(false);
     }
   };
 
@@ -512,14 +539,14 @@ export default function Settings() {
               <Server size={16} className="text-primary" />
               <span className="text-base font-semibold">LLM 服务配置</span>
             </div>
-            <div className="text-[13px] text-dim mb-6">更改后立即生效，无需重启后端</div>
+            <div className="text-[13px] text-dim mb-6">你的专属配置，仅对你生效；留空的字段沿用系统全局默认。更改后立即生效。</div>
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label className={labelClass}>API Base URL</Label>
                 <Input
                   className={inputClass}
-                  placeholder="例：https://api.openai.com/v1"
+                  placeholder="留空继承全局，例 https://api.openai.com/v1"
                   value={apiBase}
                   onChange={(e) => setApiBase(e.target.value)}
                 />
@@ -528,7 +555,7 @@ export default function Settings() {
                 <Label className={labelClass}>Model</Label>
                 <Input
                   className={inputClass}
-                  placeholder="例：gpt-4o"
+                  placeholder="留空继承全局，例 gpt-4o"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                 />
@@ -542,7 +569,7 @@ export default function Settings() {
                   <Input
                     className={cn(inputClass, "pr-11")}
                     type={showKey ? "text" : "password"}
-                    placeholder="sk-..."
+                    placeholder="留空继承全局，sk-..."
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                   />
@@ -579,7 +606,8 @@ export default function Settings() {
               <span className="text-base font-semibold">Embedding 模型</span>
             </div>
             <div className="text-[13px] text-dim mb-6">
-              用于题库 / 简历 / 知识库的向量化。改动保存后立即热切换，已建索引不会重建。
+              你的专属配置，仅对你生效；留空继承全局默认。用于题库 / 简历 / 知识库的向量化。
+              <span className="text-amber-500/90">更换模型后请点下方「更新向量索引」重建（会清空并重算向量，历史会话记忆向量无法恢复）。</span>
             </div>
 
             <div className="space-y-2.5 mb-5">
@@ -684,6 +712,46 @@ export default function Settings() {
                 </div>
               </div>
             )}
+
+            {needsReindex && (
+              <div className="mt-6 flex items-start gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 text-[13px] text-amber-500/90">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建简历 / 知识库 / 记忆向量；
+                  在重建前，相关检索结果会暂时为空。
+                </span>
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border/40 pt-5">
+              <Button
+                variant="outline"
+                onClick={handleRebuildIndex}
+                disabled={reindexing}
+                className="h-10 rounded-xl"
+              >
+                {reindexing ? (
+                  <>
+                    <Loader2 size={15} className="mr-1.5 animate-spin" /> 重建中…
+                  </>
+                ) : (
+                  <>
+                    <RotateCw size={15} className="mr-1.5" /> 更新向量索引
+                  </>
+                )}
+              </Button>
+              {reindexDone ? (
+                <span className="flex items-center gap-1.5 text-[13px] text-emerald-500">
+                  <Check size={15} /> 已重建
+                </span>
+              ) : reindexError ? (
+                <span className="text-[13px] text-red-500">{reindexError}</span>
+              ) : (
+                <span className="text-[12px] text-dim">
+                  更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
+                </span>
+              )}
+            </div>
           </CardContent>
         </Card>
 
