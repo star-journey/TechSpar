@@ -19,12 +19,21 @@ import Copilot from "./pages/Copilot";
 import TopicDrill from "./pages/TopicDrill";
 import ResumeInterview from "./pages/ResumeInterview";
 import Settings from "./pages/Settings";
+import Onboarding from "./pages/Onboarding";
 import NotFound from "./pages/NotFound";
 
 function ProtectedRoute({ children }) {
   const { token, loading } = useAuth();
   if (loading) return null;
   if (!token) return <Navigate to="/" replace />;
+  return children;
+}
+
+// Gate the app behind first-run provider setup: a user with no LLM/Embedding
+// configured can't do anything useful, so funnel them through onboarding first.
+function ProviderGate({ children }) {
+  const { needsOnboarding } = useAuth();
+  if (needsOnboarding) return <Onboarding />;
   return children;
 }
 
@@ -62,6 +71,7 @@ function AppRoutes() {
         path="/*"
         element={
           <ProtectedRoute>
+            <ProviderGate>
             <AppShell>
               <Routes>
                 <Route path="/interview/:sessionId" element={<Interview />} />
@@ -80,6 +90,7 @@ function AppRoutes() {
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </AppShell>
+            </ProviderGate>
           </ProtectedRoute>
         }
       />
