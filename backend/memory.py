@@ -1043,7 +1043,7 @@ async def llm_update_profile(
             new_strong="\n".join(new_strong_lines) or "暂无",
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         response = llm.invoke([
             SystemMessage(content="你是画像更新引擎。只返回 JSON。"),
             HumanMessage(content=prompt),
@@ -1155,7 +1155,7 @@ async def update_profile_after_interview(
 ) -> dict:
     """Mem0-style two-stage pipeline: Extract → Update."""
     profile = _load_profile(user_id)
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
 
     canonical = _get_canonical_topic_keys(user_id)
     allowed_topics_str = "、".join(sorted(canonical)) if canonical else "（暂无）"
@@ -1442,7 +1442,7 @@ async def consolidate_patterns(user_id: str) -> dict:
             for i, (_, wp) in enumerate(active)
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         response = llm.invoke([
             SystemMessage(content="你是面试教练的模式识别引擎。只返回 JSON。宁可不产出,不要编造。"),
             HumanMessage(content=CONSOLIDATE_PROMPT.format(weak_points_formatted=formatted)),

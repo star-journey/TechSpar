@@ -12,7 +12,8 @@ logger = logging.getLogger("uvicorn")
 
 async def search_company(company: str, position: str = "") -> str:
     """搜索公司信息并结构化整理。返回 JSON 字符串格式的 company_report。"""
-    if not settings.tavily_api_key:
+    tavily_key = settings.tavily_api_key
+    if not tavily_key:
         logger.warning("TAVILY_API_KEY not configured, skipping company search")
         return json.dumps({
             "company_name": company or "未知",
@@ -24,7 +25,7 @@ async def search_company(company: str, position: str = "") -> str:
         }, ensure_ascii=False)
 
     from tavily import TavilyClient
-    client = TavilyClient(api_key=settings.tavily_api_key)
+    client = TavilyClient(api_key=tavily_key)
 
     queries = [
         f"{company} {position} 业务方向 技术场景 产品",

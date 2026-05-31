@@ -1,196 +1,220 @@
-<p align="right">
-  <a href="README.md">中文</a>
-</p>
+<div align="center">
 
-<p align="center">
-  <img src="images/logo.png" alt="TechSpar" width="360" />
-</p>
+<img src="images/logo.png" alt="TechSpar" width="520" />
 
-<p align="center">
-  <b>An AI interview coach that learns you.</b>
-</p>
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#screenshots">Screenshots</a> · <a href="#architecture">Architecture</a> · <a href="LICENSE">MIT License</a>
-</p>
+**Connect focused drills, resume interviews, JD-based prep, realtime Copilot, and recording review into one continuously improving technical interview loop.**
 
-Traditional interview tools are stateless — every session starts from scratch with no knowledge of your weak spots or growth trajectory.
+[Online Demo](https://aari.top/) · [Quick Start](#quick-start) · [Chinese](README.md)
 
-TechSpar builds a **persistent candidate profile system**. After each session, it automatically extracts weaknesses, evaluates mastery levels, and records thinking patterns to form a continuously evolving personal profile. The next time it generates questions, the AI interviewer targets your weak spots based on your profile — the more you practice, the better it knows you, and training efficiency grows exponentially.
 
-## Why TechSpar
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Powered-1C3C3C.svg)](https://www.langchain.com/langgraph)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
 
-| Traditional Tools | TechSpar |
-|---|---|
-| Stateless, starts from zero every time | Long-term memory, tracks growth over time |
-| Fixed question bank, random selection | Profile-based, precisely targets weak spots |
-| No feedback loop after practice | Per-question scoring + mastery quantification + profile updates |
-| No sense of where you stand | 0-100 mastery score with data-driven skill visualization |
 
-## Screenshots
+![TechSpar product overview](images/techspar-overview.png)
+</div>
 
-### Home & Profile
+> TechSpar is not centered on one isolated feature page.  
+> Its core is a shared mechanism for long-term memory, profile updates, and next-round training scheduling.
+> Focused drills, resume interviews, JD-based prep, realtime Copilot, and recording review are not five disconnected pages. They work together around the same long-term memory, mastery, and profile system.
 
-| Home | Profile |
+---
+
+## Not Just Another Question Set
+
+Most AI interview tools do not fail because they have too few questions. They fail because they have **no feedback loop**.
+
+You may answer poorly today, and the system may know it.  
+But tomorrow, it starts again as if it has never met you.
+
+TechSpar is not built to "generate more questions." It connects practice, mock interviews, real interview assistance, and review into a continuously improving path:
+
+| Traditional interview tools | TechSpar |
 | --- | --- |
-| ![Home dashboard](images/home.png) | ![Profile](images/profile.png) |
+| Fragmented scenarios: question practice, mock interviews, and review are separate | Focused drills, resume interviews, JD-based prep, realtime Copilot, and recording review share one profile and long-term memory system |
+| Every session starts like the first session | Before each new round, TechSpar reads historical mastery, weak spots, training traces, and context |
+| Practice results stay inside the current session | Results are written back into the profile, mastery records, weak spots, and review schedule |
+| Hard to connect preparation with real interviews | Prep, mock practice, realtime assistance, and review form one continuous chain |
+| Feedback only helps this one attempt | Every piece of feedback changes the focus of the next round |
+| Usually covers only one interview stage | Covers focused drills, resume interviews, JD-based prep, realtime Copilot, and recording review |
+| Ends after use | Training -> evaluation -> profile update -> more precise next round, forming an evolving loop |
 
-The home page surfaces training entry points, recent progress, and your current learning snapshot, while the profile page summarizes practice statistics, priorities, and recent signals.
+> **TechSpar does not help you "do one round of questions." It helps you build a full technical interview loop from preparation to review, from one training session to long-term improvement.**
 
-### Knowledge Base & Question Graph
+---
 
-| Knowledge library | Question graph |
-| --- | --- |
-| ![Knowledge library](images/knowledge-library.png) | ![Question graph](images/question-graph.png) |
+## Why The Question Bank Is Core
 
-The knowledge workspace manages domain documents and FAQ content, while the graph view visualizes question clusters and mastery distribution.
+Many people understand a "question bank" as a fixed list of stored questions. That is not what TechSpar means.
 
-### History & Topic Review
+In TechSpar, the question bank is a **dynamic question-generation foundation**, not a static list that stores old questions for repeated drilling.
 
-| History | Topic detail |
-| --- | --- |
-| ![History records](images/history.png) | ![Topic detail](images/topic-detail.png) |
+- **Core knowledge base**: defines the knowledge boundaries for a domain and provides semantic reference for question generation and scoring
+- **High-frequency question bank**: marks topics that appear more often in real interviews and deserve higher priority
+- **Historical training records**: tracks what you recently practiced, which answers were weak, and which gaps still need work
+- **Long-term profile and mastery**: decides whether this round should continue fixing weak spots or expand toward harder and broader areas
 
-The history page filters past sessions by mode, while the topic detail view consolidates mastery, recent sessions, and recurring weak spots for one focus area.
+The final questions are not simply "drawn from the bank." They are **generated dynamically for the current round** after the system combines all these signals.
 
-### Job-Targeted Prep & Recording Review
+In other words:
 
-| Job-targeted prep | Recording review |
-| --- | --- |
-| ![Job prep](images/job-prep.png) | ![Recording review](images/recording-review.png) |
+- Traditional question-bank products: start with a fixed batch of questions, then ask you to answer them
+- TechSpar: first decides what you most need to practice now, then generates the most suitable questions for this round
 
-TechSpar also supports JD-based interview prep and post-interview recording analysis for targeted practice and structured review.
+That is why the question bank is not a side feature here. It is core infrastructure for the whole loop.
 
-## Architecture
+---
 
-### Three-Layer Information Fusion for Question Generation
+## Online Demo
 
-TechSpar doesn't randomly pick questions — it fuses three layers of information to make every question count:
+Try it directly: **[https://aari.top/](https://aari.top/)**
 
-```
-┌─────────────────────────────────────────────────┐
-│  Layer 3: Global Profile                        │
-│  Communication style · Thinking patterns ·      │
-│  Cross-domain skill traits                      │
-├─────────────────────────────────────────────────┤
-│  Layer 2: Topic Profile                         │
-│  Mastery 0-100 · Domain weaknesses ·            │
-│  Historical training insights                   │
-├─────────────────────────────────────────────────┤
-│  Layer 1: Session Context                       │
-│  Knowledge base retrieval · FAQ bank ·          │
-│  Recently practiced questions (deduplication)   │
-└─────────────────────────────────────────────────┘
-                    ↓ Fused injection
-        AI interviewer generates 10 personalized questions
-```
+**Register your own account** on the login page to start — each account's data is isolated. On first login a two-step wizard asks for **your own** LLM and Embedding API keys (the demo shares no keys, and never uses anyone else's).
 
-- **Mastery determines question type**: 0-30 focuses on concept understanding and comparison, 30-60 balances deep concepts with scenario application, 60-100 goes straight to system design and trade-off analysis
-- **Weaknesses determine direction**: First 3 questions precisely target historical weak spots, then gradually expand to new topics
-- **History prevents repetition**: Semantic search over the last 20 questions to avoid duplicates
-- **Knowledge base ensures accuracy**: Vector retrieval of domain knowledge documents provides factual grounding for questions
+> No keys? You can run it for free: ModelScope `ZhipuAI/GLM-5` for the main LLM, SiliconFlow `BAAI/bge-large-zh-v1.5` for embedding — both offer free quota.
+>
+> Do not upload real resumes, real recordings, or sensitive personal information to the demo environment.
 
-### Training → Evaluation → Profile Update Loop
+---
 
-Each training session isn't just practice — it's a complete feedback loop:
+## How The Loop Works
 
-```
-Answer questions → Batch evaluation (per-question scoring + weakness extraction)
-    → Mastery algorithm update (difficulty-weighted scoring)
-    → LLM profile update (Mem0-style: ADD / UPDATE / IMPROVE)
-    → Vector memory indexing (semantic retrieval of historical insights)
-    → More precise questions next time
-```
+### 1. Before training: decide what you should practice
 
-### Three-Layer Display Architecture
+The system does not repeatedly reset you as a "new user." It first reads what it already knows:
 
-| Layer | Page | Focus |
-|-------|------|-------|
-| Session Review | Training Review | Per-question scoring and improvement suggestions for this session |
-| Topic Detail | Domain Detail | Growth trends and review narrative for a single domain |
-| Profile | Personal Profile | Global structured data: cross-domain strengths/weaknesses, thinking patterns, skill radar |
+- **Session Context**: resume, JD, knowledge base, and recent training history
+- **Topic Mastery**: domain mastery, historical weak spots, and practice trajectory
+- **Global Profile**: cross-domain strengths and weaknesses, thinking patterns, and communication style
 
-## Core Capabilities
+This makes the next round feel like continued training, not a restart.
 
-**Persistent Memory** — A long-term memory system based on Mem0 architecture. Not a simple append — it uses LLM-driven intelligent updates: ADD (new), UPDATE (revise), and IMPROVE (mark progress) operations on weaknesses, with cosine similarity deduplication to keep profiles refined and compact.
+### 2. During training: different entry points share one main thread
 
-**Directed Question Generation** — Supports generating questions by domain, resume, or job description. The system combines user profile, domain mastery, knowledge retrieval, FAQ bank, and historical deduplication to generate questions dynamically instead of drawing from a fixed question set.
+#### Focused drills
 
-**Algorithmic Mastery Scoring** — A deterministic mastery scoring algorithm. `contribution = (difficulty/5) × (score/10)`, merged with historical scores weighted by answer coverage, ensuring assessment consistency without relying on subjective LLM judgment.
+Train around one domain, prioritize historical weak spots, and adapt difficulty and breadth based on mastery.
 
-**RAG-Powered Knowledge** — Dual knowledge retrieval: LlamaIndex-indexed domain knowledge documents + semantic retrieval of historical training insights, providing factual grounding for question generation and scoring.
+#### Resume mock interview
 
-## Two Training Modes
+The AI reads your resume and uses a LangGraph state machine to drive a full flow: self-introduction -> technical questions -> project deep dive -> candidate Q&A.
 
-### Resume Mock Interview
+#### JD-based prep
 
-The AI interviewer reads your resume and drives a complete interview flow via a LangGraph state machine: self-introduction → technical questions → project deep-dive → Q&A. It dynamically follows up based on your answers, adjusting its questioning strategy with your personal profile, simulating the pressure and pace of a real interview.
+After you paste a job description, the system decomposes the JD first, then generates questions closer to the real role based on requirements, resume experience, and knowledge-base content.
 
-### Focused Drill
+#### Realtime Copilot
 
-Pick a domain, and the system fuses three layers of context to generate 10 personalized interview questions. After answering, batch evaluation provides per-question scoring, comments, and improvement suggestions, while automatically updating mastery and profile to form a complete training loop.
+The system first preprocesses the JD, resume, and historical profile to generate a questioning strategy tree and high-risk paths. In realtime mode, it continuously transcribes the HR/interviewer side, predicts follow-up directions, and suggests answer strategies.
 
-## Supported Domains
+#### Recording review
 
-| Domain | | Domain | | Domain |
-|--------|---|--------|---|--------|
-| ☕ Java | | 🐍 Python | | ⚡ JavaScript |
-| 🚀 Go | | 🧮 Algorithms & Data Structures | | 🗄️ SQL |
-| ⚛️ React | | 🌱 Spring | | 📚 RAG |
-| 🤖 Agent | | 🌐 Middleware & Distributed Systems | | 🔀 Microservices |
+Upload an interview recording or paste interview text. The system transcribes it, structures Q&A, and outputs per-question analysis and improvement suggestions.
 
-Domains can be freely added or removed via the frontend. Knowledge bases support Markdown editing.
+### 3. After training: write results back into the system
+
+When a training round ends, the system does not stop at a generic summary. It continues downstream:
+
+- Evaluate answer quality per question
+- Extract weak spots, strengths, and behavioral signals
+- Update domain mastery and long-term profile
+- Use **SM-2** to schedule later review
+- Carry the result into the next training round
+
+This means: **every training session changes the next one.**
+
+---
+
+## What You Get After Each Round
+
+- **Per-question scoring**: evaluates each answer instead of relying only on an overall impression
+- **Weakness extraction**: shows where you got stuck instead of saying only "average answer"
+- **Mastery changes**: tracks whether a domain is improving or going in circles
+- **Long-term profile updates**: remembers recurring problems instead of starting over next time
+- **Review priority**: schedules later training based on forgetting risk
+- **Reference answers and retry entry**: lets you revise and practice again after review
+
+---
+
+## Who It Is For
+
+- People preparing for backend, algorithm, AI application, Agent, RAG, and other technical interviews
+- People who have practiced many questions but lack continuity and a review loop
+- People who want practice closer to real interviews around their resume projects and target JD
+- People who want targeted preparation before real interviews, or realtime Copilot support during interviews to judge likely follow-up directions
+- People who want to track ability changes over time instead of doing one-off Q&A
+
+---
 
 ## Quick Start
 
-### 1. Configuration
+### 1. Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your LLM API credentials (any OpenAI-compatible endpoint):
+`.env` holds **no API keys** — only bootstrap settings (admin account, `JWT_SECRET`, whether registration is open, etc.):
 
 ```env
-API_BASE=https://your-llm-api-base/v1
-API_KEY=sk-your-api-key
-MODEL=your-model-name
-
-# Embedding backend: api | local
-EMBEDDING_BACKEND=api
-
-# API mode (recommended)
-# EMBEDDING_API_BASE can be empty when using official OpenAI
-EMBEDDING_API_BASE=https://your-embedding-api-base/v1
-EMBEDDING_API_KEY=sk-your-embedding-key
-EMBEDDING_API_MODEL=BAAI/bge-m3
-
-# Local mode (optional, requires extra dependencies)
-LOCAL_EMBEDDING_MODEL=BAAI/bge-m3
-LOCAL_EMBEDDING_PATH=
+JWT_SECRET=change-me-in-production
+DEFAULT_EMAIL=admin@techspar.local
+DEFAULT_PASSWORD=admin123
+DEFAULT_NAME=admin
+ALLOW_REGISTRATION=false
 ```
 
-### 2a. Docker (Recommended)
+Every model and service key is **per-user**, entered in **Settings** after login. A two-step first-login wizard walks you through **LLM + Embedding** (Embedding is required — it vectorizes resume / knowledge base / memory):
+
+- **LLM**: any OpenAI-compatible endpoint (API Base + Key + Model).
+- **Embedding**: `api` mode via a compatible endpoint, or `local` mode with a local HuggingFace model (needs `pip install -r requirements.local-embedding.txt`).
+
+No keys? You can run it for free (both providers offer free quota, and they can differ):
+
+- Main LLM: ModelScope `ZhipuAI/GLM-5`, base `https://api-inference.modelscope.cn/v1`, key = ModelScope SDK Token (<https://modelscope.cn/home>)
+- Embedding: SiliconFlow `BAAI/bge-large-zh-v1.5`, base `https://api.siliconflow.cn/v1`, key = SiliconFlow API Key (<https://cloud.siliconflow.cn/>)
+
+**Optional services** are also per-user, filled under **Settings → Optional Services / Voiceprint** as needed (left blank = that feature stays off):
+
+- **DashScope** (Alibaba Cloud Bailian, <https://bailian.console.aliyun.com/>, free quota): voice input while answering / recording-review transcription / Copilot realtime speech recognition.
+- **Tavily** (<https://tavily.com/>, `1,000 credits`/month free): Copilot web search for company intel.
+- **Alibaba Cloud OSS**: long-audio upload for recording review (short voice goes through the sync path, no OSS needed).
+- **Tencent Cloud VPR voiceprint** (<https://console.cloud.tencent.com/vpr>): Copilot auto-distinguishes HR vs. candidate voices; otherwise switch the role manually.
+
+Copilot no longer has a separate model — it uses your main LLM.
+
+### 2. Start with Docker
 
 ```bash
 docker compose up --build
 ```
 
-Visit `http://localhost` to start. API requests are automatically proxied via Nginx.
+Then visit:
 
-### 2b. Manual Setup
+```text
+http://localhost
+```
+
+### 3. Start manually
+
+Backend:
 
 ```bash
 pip install -r requirements.txt
-
-# Only install this if you want local embeddings
-pip install -r requirements.local-embedding.txt
-# Then install a torch build that matches your environment
-
 uvicorn backend.main:app --reload --port 8000
 ```
 
-### 3. Start Frontend
+If you want local embedding, install the extra dependencies:
+
+```bash
+pip install -r requirements.local-embedding.txt
+```
+
+Frontend:
 
 ```bash
 cd frontend
@@ -198,52 +222,72 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` to start training (or `http://localhost` if using Docker).
+Visit:
 
-## Project Structure
+```text
+http://localhost:5173
+```
 
+After login, open `Interview Copilot` from the sidebar, or visit:
+
+```text
+http://localhost:5173/copilot
 ```
-TechSpar/
-├── backend/
-│   ├── main.py              # FastAPI entry, API routes
-│   ├── memory.py            # Profile management (Mem0-style)
-│   ├── vector_memory.py     # Vector memory (SQLite + semantic embeddings)
-│   ├── indexer.py           # Knowledge base indexing (LlamaIndex)
-│   ├── llm_provider.py      # LLM provider layer
-│   ├── graphs/
-│   │   ├── resume_interview.py  # Resume interview flow (LangGraph)
-│   │   └── topic_drill.py       # Focused drill: question generation & evaluation
-│   ├── prompts/
-│   │   └── interviewer.py       # System prompts
-│   └── storage/
-│       └── sessions.py          # Session persistence (SQLite)
-├── frontend/
-│   └── src/
-│       ├── pages/           # Home, interview, review, profile, knowledge base, etc.
-│       ├── components/      # Shared components
-│       └── api/             # API layer
-├── data/
-│   ├── topics.json          # Domain configuration
-│   ├── knowledge/           # Per-domain knowledge documents
-│   ├── resume/              # Resume files (.gitignore)
-│   └── user_profile/        # User profiles (.gitignore)
-├── docker-compose.yml      # Docker deployment
-├── backend/Dockerfile      # Backend image
-├── frontend/Dockerfile     # Frontend image (Node build → Nginx)
-├── .env.example
-├── requirements.txt
-├── requirements.local-embedding.txt
-└── clear_data.sh           # Data cleanup script
-```
+
+---
 
 ## Tech Stack
 
-**Backend**: FastAPI · LangChain · LangGraph · LlamaIndex · SQLite
+| Component | Technology |
+| --- | --- |
+| Backend | FastAPI, LangChain, LangGraph, LlamaIndex |
+| Frontend | React 19, React Router v7, Vite, Tailwind CSS v4 |
+| Storage | SQLite, semantic embeddings |
+| Auth | JWT, bcrypt |
+| LLM | Any OpenAI-compatible API |
 
-**Frontend**: React 19 · React Router v7 · Vite · Tailwind CSS v4 (responsive mobile-first design)
+---
 
-**LLM**: Any OpenAI-compatible endpoint (local deployment or cloud API)
+## Project Structure
+
+To avoid turning the document into an outdated snapshot, this section only keeps the stable structure:
+
+- `backend/main.py`: FastAPI entry and main APIs
+- `backend/graphs/`: core flows for resume interview, focused drill, JD-based prep, recording review, Copilot preprocessing, and more
+- `backend/copilot/`: realtime assistance, including strategy tree, direction prediction, answer advice, and speech stream processing
+- `backend/storage/`: persistence for sessions, Copilot prep, and related data
+- `frontend/src/pages/`: pages for training, profile, graph, question bank, Copilot, settings, review, and more
+- `frontend/src/api/`, `frontend/src/contexts/`, `frontend/src/hooks/`: API wrappers, global state, and realtime interaction logic
+- `data/users/{user_id}/`: each user's profile, resume, knowledge base, question bank, settings, and their API keys (provider.json / voiceprint.json)
+- `docker-compose.yml`, `requirements*.txt`, `.env.example`: deployment and runtime entry points
+
+---
+
+## Data Migration (Cross-Machine Sync)
+
+When switching machines or reinstalling, use **Settings -> Data Migration** to export/import data, or use the scripts under `scripts/` for scripted, batch, or cross-user migration:
+
+```bash
+# Old machine: export, generating techspar-backup-<timestamp>.tar.gz
+python3 scripts/export_data.py
+
+# New machine: deploy the project first, then import
+python3 scripts/import_data.py techspar-backup-<timestamp>.tar.gz
+```
+
+UI import assigns all archived data to the currently logged-in account, even if the original `user_id` is different. This is suitable for personal machine migration. CLI import preserves the original `user_id` by default, which is better for admin-level full-database migration.
+
+Packed content: `data/interviews.db` + `data/users/<user_id>/` (profile, resume, knowledge base, question bank, and training preferences).  
+Not packed: `.index_cache/` (rebuilt after import), `langgraph_checkpoints*` (runtime state), `.env` (now only `JWT_SECRET`/admin account/bootstrap flags, synced manually; model keys live under `data/users/` and travel with the archive).
+
+Optional arguments:
+
+- `--user-id <id>`: export only the specified user, useful in multi-user deployments
+- `--db-strategy overwrite`: overwrite local sessions with archived versions when the same `session_id` exists; default is to keep local data
+- `--overwrite-files`: overwrite existing files under `data/users/`; default is to keep local files
+
+---
 
 ## License
 
-MIT
+CC BY-NC 4.0

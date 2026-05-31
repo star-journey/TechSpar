@@ -23,7 +23,6 @@ from typing import Callable, Awaitable
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from backend.config import settings
 from backend.copilot.asr_dedup import TranscriptDeduper
 
 logger = logging.getLogger("uvicorn")
@@ -53,10 +52,12 @@ class CopilotASR:
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
+        api_key: str,
         voiceprint_client=None,
         voice_print_id: str | None = None,
     ):
         self._loop = loop
+        self._api_key = api_key
         self._ws = None
         self._started = False
         self._ready = asyncio.Event()
@@ -91,10 +92,10 @@ class CopilotASR:
     # ────────── 生命周期 ──────────
 
     async def start(self) -> bool:
-        api_key = settings.effective_dashscope_api_key
+        api_key = self._api_key
         if not api_key:
             raise RuntimeError(
-                "DASHSCOPE_API_KEY required for real-time ASR. Configure in .env"
+                "DASHSCOPE_API_KEY required for real-time ASR. Configure it in 设置."
             )
 
         try:

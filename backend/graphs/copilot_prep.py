@@ -166,6 +166,13 @@ async def run_copilot_prep(
     """
     import asyncio
 
+    from backend.user_context import set_current_user
+
+    # Bind user for the whole prep pipeline — nested copilot subsystem calls
+    # (company/jd analysts, strategy tree) resolve this user's LLM/embedding via
+    # the ContextVar; asyncio.create_task below copies the context.
+    set_current_user(user_id)
+
     profile = get_profile(user_id)
 
     # Layer 0: 三个 Analyst 并行

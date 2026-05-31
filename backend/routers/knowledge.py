@@ -100,7 +100,7 @@ async def generate_core_knowledge(topic: str, user_id: str = Depends(get_current
         raise HTTPException(400, f"Unknown topic: {topic}")
 
     topic_name = topics[topic].get("name", topic)
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([
         SystemMessage(content="你是一位资深技术面试官，擅长梳理技术领域的核心知识体系。"),
         HumanMessage(content=(

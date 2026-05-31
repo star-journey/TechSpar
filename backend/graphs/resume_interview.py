@@ -24,8 +24,12 @@ PHASE_ORDER = [
     InterviewPhase.SELF_INTRO.value,
     InterviewPhase.TECHNICAL.value,
     InterviewPhase.PROJECT_DEEP_DIVE.value,
+    InterviewPhase.BEHAVIORAL.value,
     InterviewPhase.REVERSE_QA.value,
 ]
+
+# Phases that carry inline EVAL and use eval-driven advancement.
+SCORED_PHASES = ("technical", "project_deep_dive", "behavioral")
 
 # Hard ceiling per phase to prevent infinite loops
 HARD_MAX_PER_PHASE = 10
@@ -96,7 +100,7 @@ def _make_init_interview(user_id: str):
             user_profile=profile_summary,
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content="面试开始，请开场并让候选人做自我介绍。"),
@@ -132,7 +136,7 @@ def _make_interviewer_ask(user_id: str):
             user_profile=profile_summary,
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         messages = [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
         response = await llm.ainvoke(messages)
 
@@ -182,10 +186,15 @@ def route_after_answer(state: ResumeInterviewState) -> str:
     if phase == "reverse_qa" and count >= 2:
         return "end"
 
-    # Technical / project_deep_dive: eval-driven with count fallback
-    if phase in ("technical", "project_deep_dive"):
-        # Need at least 2 questions before considering advancement
-        if count >= 2 and last_eval and last_eval.get("should_advance"):
+    # Technical / project_deep_dive / behavioral: eval-driven with count fallback
+    if phase in SCORED_PHASES:
+        score = (last_eval or {}).get("score")
+        weak = isinstance(score, (int, float)) and score < 5
+
+        # Need at least 2 questions before considering advancement.
+        # Never bail out right after a weak answer — dig one more round on the
+        # same point first; the count fallback below still caps the phase length.
+        if count >= 2 and last_eval and last_eval.get("should_advance") and not weak:
             logger.info(f"Eval-driven advance: {phase} after {count} questions")
             return "advance"
 

@@ -47,6 +47,7 @@ from backend.storage.sessions import (
     append_message,
     bulk_set_reference_answers,
     create_session,
+    expire_stale_reviewing,
     get_session,
     list_in_progress_sessions,
     save_answers_draft,
@@ -265,10 +266,7 @@ async def get_interview_session(session_id: str, user_id: str = Depends(get_curr
 
 @router.get("/interview/session/{session_id}/resume")
 async def get_resumable_session(session_id: str, user_id: str = Depends(get_current_user)):
-    session = get_session(session_id, user_id=user_id)
-    if not session:
-        raise HTTPException(404, "Session not found.")
-    return _session_response(session)
+    return await get_session_for_resume(session_id, user_id)
 
 
 @router.put("/interview/session/{session_id}/answers")
@@ -464,6 +462,7 @@ async def _run_resume_review(session_id: str, user_id: str):
     """
     try:
         entry = await get_or_restore_resume_graph(session_id, user_id)
+        resume_context = ""
         if entry is None:
             session = get_session(session_id, user_id=user_id)
             if not session:
@@ -496,6 +495,7 @@ async def _run_resume_review(session_id: str, user_id: str):
             scores = values.get("scores", [])
             weak_points = values.get("weak_points", [])
             eval_history = values.get("eval_history", [])
+            resume_context = values.get("resume_context", "")
             topic_name = values.get("topic_name", entry.get("topic"))
             mode = entry["mode"]
             topic = entry.get("topic")
@@ -508,6 +508,8 @@ async def _run_resume_review(session_id: str, user_id: str):
             weak_points=weak_points,
             topic=topic_name,
             eval_history=eval_history,
+            resume_context=resume_context,
+            user_id=user_id,
         )
 
         extraction = await update_profile_after_interview(
@@ -795,6 +797,39 @@ async def retry_review_generation(
     return _dispatch_review(session_id, session, user_id, background_tasks)
 
 
+async def get_session_for_resume(session_id: str, user_id: str):
+    expire_stale_reviewing(user_id=user_id)
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+
+    can_continue = False
+    is_finished = False
+    if session["mode"] == InterviewMode.RESUME.value:
+        entry = await get_or_restore_resume_graph(session_id, user_id)
+        if entry is not None:
+            state = await entry["graph"].aget_state(entry["config"])
+            values = state.values or {}
+            is_finished = bool(values.get("is_finished"))
+            can_continue = bool(state.next) and not is_finished
+
+    meta = session.get("meta") or {}
+    return {
+        "session_id": session_id,
+        "mode": session["mode"],
+        "topic": session.get("topic"),
+        "status": session["status"],
+        "review_error": session.get("review_error"),
+        "transcript": session.get("transcript", []),
+        "questions": session.get("questions", []),
+        "target_role": meta.get("target_role", ""),
+        "meta": meta,
+        "can_continue": can_continue,
+        "is_finished": is_finished,
+        "has_review": bool(session.get("review")),
+    }
+
+
 async def _update_drill_profile(
     session_id: str,
     topic: str,
@@ -838,7 +873,6 @@ async def _update_drill_profile(
         behavior_ops=overall.get("behavior_signals", []),
         session_id=session_id,
     )
-
 
 async def _update_job_prep_profile(session_id: str, overall: dict, scores: list, total_questions: int, meta: dict, user_id: str):
     """Update profile from JD prep evaluation."""
@@ -895,6 +929,6 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
         question=question,
         knowledge_context=knowledge_context,
     )
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"reference_answer": response.content.strip()}

@@ -149,10 +149,16 @@ async def get_copilot_strategy_tree(prep_id: str, user_id: str = Depends(get_cur
 async def copilot_realtime_ws(ws: WebSocket, session_id: str, token: str = ""):
     """Copilot 实时面试辅助 WebSocket。"""
     from backend.auth import decode_token
+    from backend.user_context import reset_current_user, set_current_user
 
     await ws.accept()
     session = None
     user_id = decode_token(token) if token else None
+    if not user_id:
+        await ws.send_json({"type": "error", "message": "Invalid or expired token"})
+        await ws.close(code=1008)
+        return
+    current_user_token = set_current_user(user_id)
 
     try:
         while True:
@@ -224,6 +230,7 @@ async def copilot_realtime_ws(ws: WebSocket, session_id: str, token: str = ""):
             except Exception:
                 pass
         _copilot_sessions.pop(session_id, None)
+        reset_current_user(current_user_token)
 
 
 async def _init_copilot_session(
@@ -237,7 +244,7 @@ async def _init_copilot_session(
     from backend.copilot import voiceprint_store
     from backend.copilot.strategy_tree import StrategyTreeNavigator
 
-    prep_data = prep_store.get_prep_by_id(prep_id)
+    prep_data = prep_store.get_prep(prep_id, user_id) if user_id else None
     if not prep_data or prep_data["status"] != "done" or not prep_data.get("result"):
         raise ValueError("Prep session not ready")
 
@@ -257,13 +264,15 @@ async def _init_copilot_session(
         vp_enabled = bool(vp_client and vp_id)
 
     asr = None
-    if settings.effective_dashscope_api_key:
+    dashscope_key = settings.effective_dashscope_api_key
+    if dashscope_key:
         try:
             from backend.copilot.asr_stream import CopilotASR
 
             loop = asyncio.get_event_loop()
             asr = CopilotASR(
                 loop,
+                api_key=dashscope_key,
                 voiceprint_client=vp_client if vp_enabled else None,
                 voice_print_id=vp_id if vp_enabled else None,
             )

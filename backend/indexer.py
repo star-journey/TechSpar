@@ -7,7 +7,6 @@ from llama_index.core import (
     VectorStoreIndex,
     StorageContext,
     load_index_from_storage,
-    Settings as LlamaSettings,
 )
 
 from backend.config import settings
@@ -43,29 +42,24 @@ def get_topic_map(user_id: str) -> dict[str, str]:
     return {k: v["dir"] for k, v in load_topics(user_id).items()}
 
 
-def _init_llama_settings():
-    LlamaSettings.llm = get_llama_llm()
-    LlamaSettings.embed_model = get_embedding()
-
-
 def _vector_index_insert_batch_size() -> int:
     """Return a safe insert batch size for embedding-backed index builds."""
     return max(1, settings.openai_embedding_max_batch_size)
 
 
 def build_resume_index(user_id: str, force_rebuild: bool = False) -> VectorStoreIndex:
-    """Build or load the resume index."""
+    """Build or load the resume index (embedded with the user's own embedding model)."""
     cache_key = (user_id, "resume")
     if cache_key in _index_cache and not force_rebuild:
         return _index_cache[cache_key]
 
-    _init_llama_settings()
+    embed_model = get_embedding(user_id)
     resume_path = settings.user_resume_path(user_id)
     cache_dir = settings.user_index_cache_path(user_id) / "resume"
 
     if cache_dir.exists() and not force_rebuild:
         storage_context = StorageContext.from_defaults(persist_dir=str(cache_dir))
-        index = load_index_from_storage(storage_context)
+        index = load_index_from_storage(storage_context, embed_model=embed_model)
     else:
         docs = SimpleDirectoryReader(
             input_dir=str(resume_path),
@@ -73,6 +67,7 @@ def build_resume_index(user_id: str, force_rebuild: bool = False) -> VectorStore
         ).load_data()
         index = VectorStoreIndex.from_documents(
             docs,
+            embed_model=embed_model,
             insert_batch_size=_vector_index_insert_batch_size(),
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +83,7 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
     if cache_key in _index_cache and not force_rebuild:
         return _index_cache[cache_key]
 
-    _init_llama_settings()
+    embed_model = get_embedding(user_id)
 
     topic_map = get_topic_map(user_id)
     if topic not in topic_map:
@@ -100,7 +95,7 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
 
     if cache_dir.exists() and not force_rebuild:
         storage_context = StorageContext.from_defaults(persist_dir=str(cache_dir))
-        index = load_index_from_storage(storage_context)
+        index = load_index_from_storage(storage_context, embed_model=embed_model)
     else:
         if not topic_dir.exists():
             raise FileNotFoundError(f"Knowledge directory not found: {topic_dir}")
@@ -116,6 +111,7 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
 
         index = VectorStoreIndex.from_documents(
             docs,
+            embed_model=embed_model,
             insert_batch_size=_vector_index_insert_batch_size(),
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +124,7 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
 def query_resume(question: str, user_id: str, top_k: int = 3) -> str:
     """Query the resume index."""
     index = build_resume_index(user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k)
+    engine = index.as_query_engine(similarity_top_k=top_k, llm=get_llama_llm(user_id))
     response = engine.query(question)
     return str(response)
 
@@ -136,7 +132,7 @@ def query_resume(question: str, user_id: str, top_k: int = 3) -> str:
 def query_topic(topic: str, question: str, user_id: str, top_k: int = 5) -> str:
     """Query a topic knowledge base."""
     index = build_topic_index(topic, user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k)
+    engine = index.as_query_engine(similarity_top_k=top_k, llm=get_llama_llm(user_id))
     response = engine.query(question)
     return str(response)
 
@@ -147,3 +143,25 @@ def retrieve_topic_context(topic: str, question: str, user_id: str, top_k: int =
     retriever = index.as_retriever(similarity_top_k=top_k)
     nodes = retriever.retrieve(question)
     return [node.get_content() for node in nodes]
+
+
+def invalidate_user_embeddings(user_id: str):
+    """Drop everything embedded with the user's previous embedding model: in-memory
+    and on-disk LlamaIndex caches, the cached embedding instance, and memory_vectors
+    rows. Called when a user changes embedding config (vectors become incompatible)."""
+    import shutil
+
+    from backend.graph import clear_user_question_embeddings
+    from backend.llm_provider import reset_embedding_cache
+    from backend.vector_memory import clear_user_vectors
+
+    for key in [k for k in _index_cache if k[0] == user_id]:
+        _index_cache.pop(key, None)
+
+    cache_dir = settings.user_index_cache_path(user_id)
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+    reset_embedding_cache(user_id)
+    clear_user_vectors(user_id)
+    clear_user_question_embeddings(user_id)

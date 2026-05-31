@@ -386,3 +386,9 @@ export async function updateSettings(payload) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function rebuildEmbeddingIndex() {
+  const res = await authFetch(`${API_BASE}/settings/rebuild-index`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

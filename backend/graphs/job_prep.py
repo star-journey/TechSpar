@@ -89,7 +89,7 @@ def generate_job_prep_preview(
         resume_context=resume_context,
     )
 
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([
         SystemMessage(content="你是 JD 备面分析引擎。只返回 JSON。"),
         HumanMessage(content=prompt),
@@ -131,7 +131,7 @@ def generate_job_prep_questions(
         resume_context=resume_context,
     )
 
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([
         SystemMessage(content="你是 JD 备面出题引擎。只返回 JSON 数组。"),
         HumanMessage(content=prompt),
@@ -190,7 +190,7 @@ def evaluate_job_prep_answers(
         qa_pairs="\n\n".join(qa_lines) or "候选人未作答",
     )
 
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([
         SystemMessage(content="你是 JD 备面评估引擎。只返回 JSON。"),
         HumanMessage(content=prompt),

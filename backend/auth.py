@@ -75,12 +75,13 @@ def create_user(email: str, password: str, name: str = "") -> dict:
     if not settings.allow_registration:
         raise HTTPException(403, "Registration is disabled")
     uid = uuid.uuid4().hex[:8]
+    normalized = email.lower().strip()
     hashed = _hash_password(password)
     conn = _get_conn()
     try:
         conn.execute(
             "INSERT INTO users (id, email, password, name) VALUES (?, ?, ?, ?)",
-            (uid, email.lower().strip(), hashed, name),
+            (uid, normalized, hashed, name),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -88,7 +89,12 @@ def create_user(email: str, password: str, name: str = "") -> dict:
         raise HTTPException(409, "Email already registered")
     conn.close()
     ensure_preset_topics(uid)
-    return {"id": uid, "email": email.lower().strip(), "name": name}
+    return {
+        "id": uid,
+        "email": normalized,
+        "name": name,
+        "is_admin": normalized == settings.default_email.lower().strip(),
+    }
 
 
 def authenticate_user(email: str, password: str) -> dict | None:
@@ -99,7 +105,22 @@ def authenticate_user(email: str, password: str) -> dict | None:
     conn.close()
     if not row or not _verify_password(password, row["password"]):
         return None
-    return {"id": row["id"], "email": row["email"], "name": row["name"]}
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "name": row["name"],
+        "is_admin": row["email"] == settings.default_email.lower().strip(),
+    }
+
+
+def is_admin_user(user_id: str) -> bool:
+    """Whether the given user_id matches the bootstrap DEFAULT_EMAIL admin."""
+    conn = _get_conn()
+    row = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    if not row:
+        return False
+    return row["email"] == settings.default_email.lower().strip()
 
 
 def create_token(user_id: str) -> str:

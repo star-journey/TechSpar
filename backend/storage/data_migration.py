@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     overall TEXT DEFAULT '{}',
     reference_answers TEXT DEFAULT '{}',
     review TEXT,
+    answers_draft TEXT DEFAULT '[]',
+    current_index INTEGER DEFAULT 0,
     status TEXT DEFAULT 'ongoing',
     review_error TEXT,
     user_id TEXT,
@@ -75,13 +78,26 @@ def _filter_tar_member(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 
 
 def _export_filtered_db(user_id: str, dst: Path) -> None:
-    """生成只含指定 user_id 行的 DB 副本。"""
+    """生成只含指定 user_id 行的 DB 副本。
+
+    用 closing() 显式关闭：sqlite3 的 with 语法只 commit/rollback、不 close，
+    Windows 上未关闭的连接持有文件锁，会让后续 tmp_db.unlink() 失败。
+    """
     src_path = _db_path()
-    with sqlite3.connect(str(src_path)) as src, sqlite3.connect(str(dst)) as dst_conn:
+    with closing(sqlite3.connect(str(src_path))) as src, \
+         closing(sqlite3.connect(str(dst))) as dst_conn:
         src.backup(dst_conn)
-        dst_conn.execute("DELETE FROM sessions WHERE user_id != ?", (user_id,))
+        for table in ("sessions", "memory_vectors", "question_embeddings"):
+            exists = dst_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                continue
+            cols = {r[1] for r in dst_conn.execute(f"PRAGMA table_info({table})")}
+            if "user_id" in cols:
+                dst_conn.execute(f"DELETE FROM {table} WHERE user_id != ?", (user_id,))
         dst_conn.commit()
-    with sqlite3.connect(str(dst)) as dst_conn:
+    with closing(sqlite3.connect(str(dst))) as dst_conn:
         dst_conn.execute("VACUUM")
 
 
@@ -145,7 +161,7 @@ def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
     dest_resolved = dest.resolve()
     for member in tar.getmembers():
         target = (dest / member.name).resolve()
-        if not str(target).startswith(str(dest_resolved)):
+        if not target.is_relative_to(dest_resolved):
             raise RuntimeError(f"archive 包含越界路径: {member.name}")
     try:
         tar.extractall(dest, filter="data")
@@ -202,7 +218,16 @@ def _merge_db(
                     set_cols = [c for c in common if c != "session_id"]
                     assigns = ", ".join(f"{c} = ?" for c in set_cols)
                     vals = [row[common.index(c)] for c in set_cols]
-                    dst.execute(f"UPDATE sessions SET {assigns} WHERE session_id = ?", vals + [sid])
+                    if rebind_user_id is not None and "user_id" in common:
+                        dst.execute(
+                            f"UPDATE sessions SET {assigns} WHERE session_id = ? AND user_id = ?",
+                            vals + [sid, rebind_user_id],
+                        )
+                        if dst.rowcount == 0:
+                            skipped += 1
+                            continue
+                    else:
+                        dst.execute(f"UPDATE sessions SET {assigns} WHERE session_id = ?", vals + [sid])
                     inserted += 1
                 else:
                     skipped += 1
@@ -240,7 +265,8 @@ def _merge_users(
         rel = src_file.relative_to(src_users)
         if rebind_user_id is not None:
             parts = list(rel.parts)
-            if not parts:
+            if not parts or parts[-1] == "provider.json":
+                skipped += 1
                 continue
             parts[0] = rebind_user_id
             rel = Path(*parts)

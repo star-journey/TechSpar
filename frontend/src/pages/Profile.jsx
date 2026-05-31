@@ -3,7 +3,10 @@ import { useNavigate } from "react-router-dom";
 import {
   Activity,
   Brain,
+  BriefcaseBusiness,
+  ChevronRight,
   Clock3,
+  FileText,
   Target,
   TrendingUp,
 } from "lucide-react";
@@ -84,6 +87,30 @@ export default function Profile() {
   );
 
   if (!hasData) {
+    const startOptions = [
+      {
+        path: "/topic-drill",
+        icon: Target,
+        title: "专项训练",
+        desc: "选个技术主题，AI 按你的应答深度持续追问。",
+        hint: "最快上手",
+      },
+      {
+        path: "/resume-interview",
+        icon: FileText,
+        title: "简历面试",
+        desc: "上传简历，按你的经历定制行为面与项目深挖。",
+        hint: "需先传简历",
+      },
+      {
+        path: "/job-prep",
+        icon: BriefcaseBusiness,
+        title: "JD 备面",
+        desc: "贴目标岗位 JD，模拟真实岗位的考察重点。",
+        hint: "需先填 JD",
+      },
+    ];
+
     return (
       <div className={PAGE_CLASS}>
         <div className="text-3xl font-display font-bold">个人画像</div>
@@ -97,9 +124,29 @@ export default function Profile() {
               <div className="mt-4 text-sm leading-7 text-dim md:text-base">
                 开始面试后，系统会逐步把你的弱项、强项、答题模式和领域变化沉淀下来。等第一批数据形成，页面会自动切到驾驶舱视图。
               </div>
-              <Button variant="gradient" size="lg" className="mt-6" onClick={() => navigate("/")}>
-                开始第一场面试
-              </Button>
+            </div>
+
+            <div className="mt-7 text-xs font-medium text-dim">选一个方式开始第一场面试</div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              {startOptions.map(({ path, icon: Icon, title, desc, hint }) => (
+                <button
+                  key={path}
+                  onClick={() => navigate(path)}
+                  className="group relative flex flex-col gap-3 rounded-2xl border border-border/80 bg-card/70 p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:bg-card hover:shadow-lg hover:shadow-primary/5"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/80 bg-background text-dim transition-colors duration-300 group-hover:border-primary/30 group-hover:bg-primary/10 group-hover:text-primary">
+                      <Icon size={20} />
+                    </div>
+                    <ChevronRight size={16} className="text-dim/60 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:text-primary" />
+                  </div>
+                  <div>
+                    <div className="text-[15px] font-semibold tracking-tight text-text">{title}</div>
+                    <div className="mt-1 text-xs leading-5 text-dim">{desc}</div>
+                  </div>
+                  <div className="text-[11px] font-medium text-primary/80">{hint}</div>
+                </button>
+              ))}
             </div>
           </CardContent>
         </Card>

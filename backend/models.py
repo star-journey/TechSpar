@@ -21,6 +21,7 @@ class InterviewPhase(str, Enum):
     SELF_INTRO = "self_intro"
     TECHNICAL = "technical"
     PROJECT_DEEP_DIVE = "project_deep_dive"
+    BEHAVIORAL = "behavioral"
     REVERSE_QA = "reverse_qa"
     END = "end"
 
@@ -163,7 +164,7 @@ class UserSettings(BaseModel):
 
 
 class LLMSettings(BaseModel):
-    """Global LLM provider configuration."""
+    """Per-user LLM provider configuration."""
     api_base: str = ""
     api_key: str = ""
     model: str = ""
@@ -172,29 +173,42 @@ class LLMSettings(BaseModel):
 
 class STTSettings(BaseModel):
     """Global STT provider configuration (hot-reloadable)."""
-    provider: str = "dashscope"  # dashscope | azure | soniox | elevenlabs | qwencloud
-    # DashScope (含短/长两条链路)
+    provider: str = "dashscope"
     dashscope_api_key: str = ""
-    # Azure Speech Fast Transcription
     azure_speech_key: str = ""
     azure_speech_region: str = ""
     azure_speech_locales: str = "zh-CN,en-US"
-    # Soniox
     soniox_api_key: str = ""
     soniox_model: str = "stt-async-v4"
-    # ElevenLabs
     elevenlabs_api_key: str = ""
     elevenlabs_model: str = "scribe_v2"
-    # QwenCloud (DashScope International)
     qwencloud_api_key: str = ""
+
+
+class EmbeddingSettings(BaseModel):
+    """Per-user embedding provider configuration."""
+    backend: str = ""
+    api_base: str = ""
+    api_key: str = ""
+    api_model: str = ""
+    local_model: str = ""
+    local_path: str = ""
+
+
+class SystemSettings(BaseModel):
+    """Global system flags."""
+    allow_registration: bool = False
 
 
 class SettingsResponse(BaseModel):
     """Combined response for GET/PUT /settings."""
-    llm: LLMSettings
-    training: UserSettings
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    system: SystemSettings = Field(default_factory=SystemSettings)
+    training: UserSettings = Field(default_factory=UserSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
-
+    is_admin: bool = False
+    configured: dict[str, bool] = Field(default_factory=dict)
 
 class VoiceprintCredentials(BaseModel):
     """腾讯云 VPR 凭据（per-user）。"""

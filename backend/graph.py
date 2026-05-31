@@ -20,27 +20,41 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+_QUESTION_EMB_DDL = """
+    CREATE TABLE IF NOT EXISTS question_embeddings (
+        question_hash TEXT,
+        topic         TEXT,
+        question_text TEXT,
+        embedding     BLOB NOT NULL,
+        user_id       TEXT,
+        created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (question_hash, user_id)
+    )
+"""
+
+
 def _init_question_embeddings_table(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS question_embeddings (
-            question_hash TEXT PRIMARY KEY,
-            topic         TEXT,
-            question_text TEXT,
-            embedding     BLOB NOT NULL,
-            user_id       TEXT,
-            created_at    TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # Migrate: add user_id if missing
-    try:
-        conn.execute("SELECT user_id FROM question_embeddings LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE question_embeddings ADD COLUMN user_id TEXT")
+    conn.execute(_QUESTION_EMB_DDL)
+    # Migrate legacy single-column PK (question_hash) → composite (question_hash, user_id).
+    # The table is a recomputable cache, so dropping it on migration is harmless.
+    pk_cols = [r["name"] for r in conn.execute("PRAGMA table_info(question_embeddings)") if r["pk"]]
+    if pk_cols == ["question_hash"]:
+        conn.execute("DROP TABLE question_embeddings")
+        conn.execute(_QUESTION_EMB_DDL)
     conn.commit()
 
 
 def _hash_question(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def clear_user_question_embeddings(user_id: str):
+    """Drop a user's cached question embeddings (called on embedding model change)."""
+    conn = _get_conn()
+    _init_question_embeddings_table(conn)
+    conn.execute("DELETE FROM question_embeddings WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 def _extract_questions(conn: sqlite3.Connection, topic: str, user_id: str) -> list[dict]:
@@ -105,19 +119,24 @@ def _get_or_compute_embeddings(
     conn: sqlite3.Connection,
     questions: list[dict],
     topic: str,
+    user_id: str,
 ) -> np.ndarray:
-    """Return (N, 1024) embedding matrix. Uses cache table, computes missing."""
+    """Return (N, D) embedding matrix. Uses cache table, computes missing.
+
+    Cache is scoped per user — vectors from different users' embedding models have
+    incompatible dimensions and must never be mixed in one matrix."""
     _init_question_embeddings_table(conn)
 
     hashes = [_hash_question(q["question"]) for q in questions]
 
-    # Load cached
+    # Load cached (this user only)
     cached: dict[str, np.ndarray] = {}
     if hashes:
         placeholders = ",".join("?" for _ in hashes)
         rows = conn.execute(
-            f"SELECT question_hash, embedding FROM question_embeddings WHERE question_hash IN ({placeholders})",
-            hashes,
+            f"SELECT question_hash, embedding FROM question_embeddings "
+            f"WHERE user_id = ? AND question_hash IN ({placeholders})",
+            [user_id, *hashes],
         ).fetchall()
         for r in rows:
             cached[r["question_hash"]] = _deserialize(r["embedding"])
@@ -133,16 +152,16 @@ def _get_or_compute_embeddings(
     # Batch embed missing
     if to_embed:
         from backend.llm_provider import batched_embed
-        vectors = batched_embed(to_embed)
+        vectors = batched_embed(to_embed, user_id)
         now = datetime.now().isoformat()
         for text, vec, idx in zip(to_embed, vectors, to_embed_idx):
             vec_np = np.array(vec, dtype=np.float32)
             h = hashes[idx]
             cached[h] = vec_np
             conn.execute(
-                "INSERT OR REPLACE INTO question_embeddings (question_hash, topic, question_text, embedding, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (h, topic, text, _serialize(vec_np), now),
+                "INSERT OR REPLACE INTO question_embeddings (question_hash, topic, question_text, embedding, created_at, user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (h, topic, text, _serialize(vec_np), now, user_id),
             )
         conn.commit()
 
@@ -168,7 +187,7 @@ def build_graph(topic: str, user_id: str) -> dict:
             "links": [],
         }
 
-    embeddings = _get_or_compute_embeddings(conn, questions, topic)
+    embeddings = _get_or_compute_embeddings(conn, questions, topic, user_id)
     conn.close()
 
     # Build nodes

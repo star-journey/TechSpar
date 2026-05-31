@@ -60,7 +60,7 @@ def _analyze_recording_background(
             RECORDING_STRUCTURE_PROMPT,
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         profile_summary = get_profile_summary(user_id)
 
         if req_recording_mode == "dual":

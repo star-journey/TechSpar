@@ -41,7 +41,7 @@ def infer_target_role(user_id: str = Depends(get_current_user)):
     except Exception as exc:
         raise HTTPException(500, f"读取简历失败: {exc}")
 
-    llm = get_langchain_llm()
+    llm = get_langchain_llm(user_id)
     response = llm.invoke([
         SystemMessage(content="你是岗位推断引擎。只返回岗位名称，不要任何其他内容。"),
         HumanMessage(content=INFER_TARGET_ROLE_PROMPT.format(resume_context=resume_ctx)),
@@ -108,7 +108,7 @@ def _generate_retrospective_background(task_id: str, topic: str, user_id: str):
             mastery_info=mastery_text,
         )
 
-        llm = get_langchain_llm()
+        llm = get_langchain_llm(user_id)
         response = llm.invoke([
             SystemMessage(content="你是面试教练。用 markdown 生成回顾报告。"),
             HumanMessage(content=prompt),
@@ -123,6 +123,7 @@ def _generate_retrospective_background(task_id: str, topic: str, user_id: str):
         _task_status[task_id] = {
             "status": "done",
             "type": "retrospective",
+            "user_id": user_id,
             "result": {
                 "topic": topic,
                 "topic_name": topic_name,
@@ -133,7 +134,7 @@ def _generate_retrospective_background(task_id: str, topic: str, user_id: str):
         }
         logger.info("Retrospective generated for topic %s", topic)
     except Exception as exc:
-        _task_status[task_id] = {"status": "error", "type": "retrospective"}
+        _task_status[task_id] = {"status": "error", "type": "retrospective", "user_id": user_id}
         logger.error("Retrospective failed for topic %s: %s", topic, exc)
 
 
@@ -153,6 +154,6 @@ async def generate_retrospective(
     if existing and existing.get("status") == "pending":
         return {"task_id": task_id, "status": "pending"}
 
-    _task_status[task_id] = {"status": "pending", "type": "retrospective"}
+    _task_status[task_id] = {"status": "pending", "type": "retrospective", "user_id": user_id}
     background_tasks.add_task(_generate_retrospective_background, task_id, topic, user_id)
     return {"task_id": task_id, "status": "pending"}

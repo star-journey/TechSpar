@@ -9,6 +9,7 @@ from backend.storage.sessions import (
     STATUS_REVIEWED,
     STATUS_REVIEWING,
     delete_session,
+    expire_stale_reviewing,
     get_session,
     list_distinct_topics,
     list_sessions,
@@ -19,7 +20,6 @@ router = APIRouter(prefix="/api")
 
 @router.get("/interview/review/{session_id}")
 async def get_review(session_id: str, user_id: str = Depends(get_current_user)):
-    """Get review for a completed session."""
     session = get_session(session_id, user_id=user_id)
     if not session:
         raise HTTPException(404, "Session not found.")
@@ -30,14 +30,19 @@ async def get_review(session_id: str, user_id: str = Depends(get_current_user)):
 
 @router.get("/tasks/{task_id}")
 async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)):
-    """Poll async task status."""
     task = _task_status.get(task_id)
-    if task and task.get("user_id") in (None, user_id):
+    if task and task.get("user_id") not in (None, user_id):
+        raise HTTPException(404, "Task not found.")
+    if task and task.get("status") in ("done", "error"):
         public_task = {key: value for key, value in task.items() if key != "user_id"}
         return {"task_id": task_id, **public_task}
 
+    expire_stale_reviewing(user_id=user_id)
     session = get_session(task_id, user_id=user_id)
     if not session:
+        if task:
+            public_task = {key: value for key, value in task.items() if key != "user_id"}
+            return {"task_id": task_id, **public_task}
         raise HTTPException(404, "Task not found.")
 
     mode = session.get("mode")
@@ -65,13 +70,12 @@ async def get_history(
     topic: str = None,
     user_id: str = Depends(get_current_user),
 ):
-    """List past interview sessions with filtering and pagination."""
+    expire_stale_reviewing(user_id=user_id)
     return list_sessions(user_id=user_id, limit=limit, offset=offset, mode=mode, topic=topic)
 
 
 @router.delete("/interview/session/{session_id}")
 async def delete_session_endpoint(session_id: str, user_id: str = Depends(get_current_user)):
-    """Delete a session record."""
     deleted = delete_session(session_id, user_id=user_id)
     if not deleted:
         raise HTTPException(404, "Session not found.")
@@ -80,5 +84,4 @@ async def delete_session_endpoint(session_id: str, user_id: str = Depends(get_cu
 
 @router.get("/interview/topics")
 async def get_interview_topics(user_id: str = Depends(get_current_user)):
-    """List distinct topics from completed sessions (for filter dropdown)."""
     return list_distinct_topics(user_id=user_id)
