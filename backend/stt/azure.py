@@ -1,7 +1,8 @@
 """Azure Fast Transcription provider (sync multipart, no public URL needed).
 
-API: POST https://{region-or-resource}.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe
-Body: multipart/form-data 包含 `audio` 文件 + `definition` JSON。
+API: POST https://{region}.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe
+Body: multipart/form-data 包含 `audio` 文件 + `definition` JSON。走 enhancedMode（增强/LLM
+模式）自动检测语言，对中英混说更友好；`locales` 退化为可选项，填了才强制指定语言。
 本地 m4a → ffmpeg 转 wav 后再上传（m4a 不在 Azure 官方支持列表内）。
 """
 from __future__ import annotations
@@ -46,22 +47,25 @@ class AzureFastTranscriptionProvider(STTProvider):
         region = (settings.azure_speech_region or "").strip().lower()
         if not region:
             raise RuntimeError("AZURE_SPEECH_REGION not configured")
-        # 允许填全资源域名（自带 cognitiveservices.azure.com）或仅区域代号。
-        host = region if "." in region else f"{region}.cognitiveservices.azure.com"
+        # 区域代号 → 区域 endpoint；含 "." 视为完整自定义资源域名，原样使用。
+        host = region if "." in region else f"{region}.api.cognitive.microsoft.com"
         return f"https://{host}/speechtotext/transcriptions:transcribe?api-version={_API_VERSION}"
 
     def _locales(self) -> list[str]:
         raw = settings.azure_speech_locales or ""
-        items = [s.strip() for s in raw.split(",") if s.strip()]
-        return items or ["zh-CN", "en-US"]
+        return [s.strip() for s in raw.split(",") if s.strip()]
 
     def _do_transcribe(self, audio_bytes: bytes, suffix: str) -> str:
         url = self._endpoint()
         mime = _MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+        # 增强（LLM）模式：自动检测语言，对中英混说更友好。
         definition = {
-            "locales": self._locales(),
+            "enhancedMode": {"enabled": True, "task": "transcribe"},
             "profanityFilterMode": "None",
         }
+        locales = self._locales()
+        if locales:  # 可选覆盖：填了就强制指定语言，留空交给增强模式自动检测
+            definition["locales"] = locales
         files = {
             "audio": (f"audio{suffix}", audio_bytes, mime),
             "definition": (None, json.dumps(definition), "application/json"),

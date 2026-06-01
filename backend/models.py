@@ -177,7 +177,7 @@ class STTSettings(BaseModel):
     dashscope_api_key: str = ""
     azure_speech_key: str = ""
     azure_speech_region: str = ""
-    azure_speech_locales: str = "zh-CN,en-US"
+    azure_speech_locales: str = ""
     soniox_api_key: str = ""
     soniox_model: str = "stt-async-v4"
     elevenlabs_api_key: str = ""

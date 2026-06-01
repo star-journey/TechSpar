@@ -80,7 +80,8 @@ class Settings(BaseSettings):
     # Azure Speech (Fast Transcription)
     azure_speech_key: str = ""
     azure_speech_region: str = ""
-    azure_speech_locales: str = "zh-CN,en-US"
+    # 留空 → enhancedMode 自动检测语言；填写（逗号分隔）则强制指定语言。
+    azure_speech_locales: str = ""
 
     # Soniox (async transcription)
     soniox_api_key: str = ""

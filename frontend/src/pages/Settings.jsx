@@ -166,7 +166,7 @@ export default function Settings() {
   const [sttDashscopeKey, setSttDashscopeKey] = useState("");
   const [sttAzureKey, setSttAzureKey] = useState("");
   const [sttAzureRegion, setSttAzureRegion] = useState("");
-  const [sttAzureLocales, setSttAzureLocales] = useState("zh-CN,en-US");
+  const [sttAzureLocales, setSttAzureLocales] = useState("");
   const [sttSonioxKey, setSttSonioxKey] = useState("");
   const [sttSonioxModel, setSttSonioxModel] = useState("stt-async-v4");
   const [sttElevenKey, setSttElevenKey] = useState("");
@@ -237,7 +237,7 @@ export default function Settings() {
         setSttDashscopeKey(stt.dashscope_api_key || "");
         setSttAzureKey(stt.azure_speech_key || "");
         setSttAzureRegion(stt.azure_speech_region || "");
-        setSttAzureLocales(stt.azure_speech_locales || "zh-CN,en-US");
+        setSttAzureLocales(stt.azure_speech_locales || "");
         setSttSonioxKey(stt.soniox_api_key || "");
         setSttSonioxModel(stt.soniox_model || "stt-async-v4");
         setSttElevenKey(stt.elevenlabs_api_key || "");
@@ -887,13 +887,14 @@ export default function Settings() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className={labelClass}>Locales</Label>
+                    <Label className={labelClass}>Locales（可选）</Label>
                     <Input
                       className={inputClass}
-                      placeholder="zh-CN,en-US"
+                      placeholder="留空=自动检测；强制指定填 zh-CN"
                       value={sttAzureLocales}
                       onChange={(e) => setSttAzureLocales(e.target.value)}
                     />
+                    <div className="text-[12px] text-dim/60">增强模式默认自动检测语言，仅在需要强制单一语言时填写</div>
                   </div>
                 </div>
                 <div className="space-y-2">

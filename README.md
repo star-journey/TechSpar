@@ -226,9 +226,10 @@ ALIYUN_OSS_ENDPOINT=oss-cn-shanghai.aliyuncs.com
 STT_PROVIDER=dashscope
 
 # Azure Speech Fast Transcription（本地直传，无需公网 URL）
+# 走 enhancedMode 自动检测语言（需所在区域支持该模式）；LOCALES 留空=自动，填写可强制指定语言
 AZURE_SPEECH_KEY=
 AZURE_SPEECH_REGION=eastus
-AZURE_SPEECH_LOCALES=zh-CN,en-US
+AZURE_SPEECH_LOCALES=
 
 # Soniox（异步，原生支持 m4a）
 SONIOX_API_KEY=
