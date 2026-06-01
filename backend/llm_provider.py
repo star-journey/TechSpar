@@ -147,6 +147,12 @@ def _build_embedding(c: dict):
             kwargs["api_base"] = c["api_base"]
         return OpenAIEmbedding(**kwargs)
 
+    # mode == "local". An empty backend means nothing was configured (the implicit
+    # fallback), which in this bring-your-own-key deployment is a misconfiguration
+    # rather than a real local setup — surface it as a handled "not configured" error.
+    if not c["backend"]:
+        raise ProviderNotConfigured("Embedding")
+
     try:
         from llama_index.embeddings.huggingface import HuggingFaceEmbedding
     except ImportError as exc:
@@ -209,6 +215,5 @@ def provider_status(user_id: str | None = None) -> dict:
             emb["local_model"]
             or emb["local_path"]
             or embedding_local_path_of(emb["local_path"], emb["local_model"], settings.base_dir, "")
-            or embedding_local_model_of(emb["local_model"], "")
         )
     return {"llm": bool(llm["api_key"] and llm["model"]), "embedding": emb_ok}

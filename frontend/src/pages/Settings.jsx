@@ -26,6 +26,7 @@ import {
   deleteVoiceprintEnrollment,
 } from "../api/voiceprint";
 import { exportData, importData } from "../api/dataMigration";
+import { useAuth } from "../contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -113,6 +114,7 @@ const STT_PROVIDERS = [
 ];
 
 export default function Settings() {
+  const { setNeedsOnboarding } = useAuth();
   const [apiBase, setApiBase] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
@@ -522,6 +524,7 @@ export default function Settings() {
       setTimeout(() => setReindexDone(false), 3000);
     } catch (err) {
       setReindexError("重建失败: " + err.message);
+      if (err.code === "provider_not_configured") setNeedsOnboarding(true);
     } finally {
       setReindexing(false);
     }

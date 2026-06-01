@@ -21,6 +21,24 @@ export async function authFetch(url, options = {}) {
   return res;
 }
 
+// Throw an Error carrying the parsed `detail` (as message) and `code` from a JSON
+// error body, falling back to raw text. Lets callers branch on err.code.
+async function throwResponseError(res) {
+  const text = await res.text();
+  let detail = text;
+  let code = "";
+  try {
+    const j = JSON.parse(text);
+    detail = j.detail || text;
+    code = j.code || "";
+  } catch {
+    // not JSON — keep raw text
+  }
+  const err = new Error(detail);
+  err.code = code;
+  throw err;
+}
+
 // ── Speech-to-text ──
 
 export async function transcribeAudio(audioBlob) {
@@ -389,6 +407,6 @@ export async function updateSettings(payload) {
 
 export async function rebuildEmbeddingIndex() {
   const res = await authFetch(`${API_BASE}/settings/rebuild-index`, { method: "POST" });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) await throwResponseError(res);
   return res.json();
 }
