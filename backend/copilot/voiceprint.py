@@ -152,7 +152,6 @@ class VoiceprintClient:
             "SampleRate": _SAMPLE_RATE_16K,
             "SpeakerNick": speaker_nick,
             "Data": data_b64,
-            "DataLength": len(wav_bytes),
         }
         try:
             resp = await self._call("VoicePrintEnroll", params)
@@ -185,7 +184,6 @@ class VoiceprintClient:
             "VoiceFormat": _VOICE_FORMAT_WAV,
             "SampleRate": _SAMPLE_RATE_16K,
             "Data": data_b64,
-            "DataLength": len(wav_bytes),
         }
         try:
             resp = await self._call("VoicePrintVerify", params)
