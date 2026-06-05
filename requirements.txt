@@ -4,16 +4,12 @@ langchain-openai>=0.2.0
 langgraph>=0.2.0
 langgraph-checkpoint-sqlite>=2.0.0
 
-# LlamaIndex
-llama-index>=0.11.0
-llama-index-readers-file>=0.4.0
-llama-index-llms-openai>=0.3.0
-llama-index-llms-openai-like>=0.2.0
-llama-index-embeddings-openai>=0.3.0
+# OpenAI-compatible embedding client (RAG / 记忆向量;自写轻量检索,无 LlamaIndex)
+openai>=1.0.0
 
 # Optional local embedding dependencies live in requirements.local-embedding.txt
 
-# PDF reading (for resume)
+# PDF reading (for resume RAG)
 pypdf>=4.0.0
 
 # Web

@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from backend.auth import get_current_user
 from backend.config import settings
 from backend.graph import build_graph
-from backend.indexer import _index_cache, load_topics
+from backend.indexer import invalidate_topic, load_topics
 from backend.llm_provider import get_langchain_llm
 
 router = APIRouter(prefix="/api")
@@ -46,7 +46,7 @@ async def update_core_knowledge(
         raise HTTPException(404, f"File not found: {filename}")
 
     filepath.write_text(body.get("content", ""), encoding="utf-8")
-    _index_cache.pop((user_id, topic), None)
+    invalidate_topic(topic, user_id)
     return {"ok": True}
 
 
@@ -66,7 +66,7 @@ async def delete_core_knowledge(
         raise HTTPException(404, f"File not found: {filename}")
 
     filepath.unlink()
-    _index_cache.pop((user_id, topic), None)
+    invalidate_topic(topic, user_id)
     return {"ok": True}
 
 
@@ -88,7 +88,7 @@ async def create_core_knowledge(topic: str, body: dict, user_id: str = Depends(g
         raise HTTPException(409, f"File already exists: {filename}")
 
     filepath.write_text(body.get("content", ""), encoding="utf-8")
-    _index_cache.pop((user_id, topic), None)
+    invalidate_topic(topic, user_id)
     return {"ok": True, "filename": filename}
 
 
@@ -121,7 +121,7 @@ async def generate_core_knowledge(topic: str, user_id: str = Depends(get_current
     topic_dir.mkdir(parents=True, exist_ok=True)
     readme = topic_dir / "README.md"
     readme.write_text(content, encoding="utf-8")
-    _index_cache.pop((user_id, topic), None)
+    invalidate_topic(topic, user_id)
     return {"ok": True, "content": content}
 
 

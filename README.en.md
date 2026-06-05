@@ -5,7 +5,7 @@
 
 **Connect focused drills, resume interviews, JD-based prep, realtime Copilot, and recording review into one continuously improving technical interview loop.**
 
-[Online Demo](https://aari.top/) · [Quick Start](#quick-start) · [Chinese](README.md)
+[Online Demo](https://techspar.top/) · [Quick Start](#quick-start) · [Chinese](README.md)
 
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
@@ -71,7 +71,7 @@ That is why the question bank is not a side feature here. It is core infrastruct
 
 ## Online Demo
 
-Try it directly: **[https://aari.top/](https://aari.top/)**
+Try it directly: **[https://techspar.top/](https://techspar.top/)**
 
 **Register your own account** on the login page to start — each account's data is isolated. On first login a two-step wizard asks for **your own** LLM and Embedding API keys (the demo shares no keys, and never uses anyone else's).
 
@@ -240,7 +240,7 @@ http://localhost:5173/copilot
 
 | Component | Technology |
 | --- | --- |
-| Backend | FastAPI, LangChain, LangGraph, LlamaIndex |
+| Backend | FastAPI, LangChain, LangGraph |
 | Frontend | React 19, React Router v7, Vite, Tailwind CSS v4 |
 | Storage | SQLite, semantic embeddings |
 | Auth | JWT, bcrypt |

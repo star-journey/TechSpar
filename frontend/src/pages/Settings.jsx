@@ -130,6 +130,7 @@ export default function Settings() {
   const [embApiBase, setEmbApiBase] = useState("");
   const [embApiKey, setEmbApiKey] = useState("");
   const [embApiModel, setEmbApiModel] = useState("");
+  const [embApiBatchSize, setEmbApiBatchSize] = useState(10);
   const [embLocalModel, setEmbLocalModel] = useState("");
   const [embLocalPath, setEmbLocalPath] = useState("");
   const [showEmbKey, setShowEmbKey] = useState(false);
@@ -144,6 +145,8 @@ export default function Settings() {
   const [reindexing, setReindexing] = useState(false);
   const [reindexDone, setReindexDone] = useState(false);
   const [reindexError, setReindexError] = useState("");
+  const [reindexProgress, setReindexProgress] = useState(null); // { completed, total, label, status }
+  const [lastReindexAt, setLastReindexAt] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -224,10 +227,12 @@ export default function Settings() {
         setEmbApiBase(emb.api_base || "");
         setEmbApiKey(emb.api_key || "");
         setEmbApiModel(emb.api_model || "");
+        setEmbApiBatchSize(emb.api_batch_size ?? 10);
         setEmbLocalModel(emb.local_model || "");
         setEmbLocalPath(emb.local_path || "");
         setAllowRegistration(Boolean(data.system?.allow_registration));
         setIsAdmin(Boolean(data.is_admin));
+        setLastReindexAt(data.last_reindex_at || "");
         setNumQuestions(data.training.num_questions ?? 10);
         setDivergence(data.training.divergence ?? 3);
         setDrillGenerationTimeoutSeconds(data.training.drill_generation_timeout_seconds ?? 300);
@@ -477,6 +482,7 @@ export default function Settings() {
           api_base: embApiBase,
           api_key: embApiKey,
           api_model: embApiModel,
+          api_batch_size: embApiBatchSize,
           local_model: embLocalModel,
           local_path: embLocalPath,
         },
@@ -517,16 +523,26 @@ export default function Settings() {
   const handleRebuildIndex = async () => {
     setReindexing(true);
     setReindexError("");
+    setReindexDone(false);
+    setReindexProgress(null);
     try {
-      await rebuildEmbeddingIndex();
-      setNeedsReindex(false);
-      setReindexDone(true);
-      setTimeout(() => setReindexDone(false), 3000);
+      await rebuildEmbeddingIndex({
+        onProgress: (p) => setReindexProgress(p),
+        onDone: (d) => {
+          setNeedsReindex(false);
+          setReindexProgress(null);
+          setReindexDone(true);
+          setLastReindexAt(d.last_rebuild_at || "");
+          setTimeout(() => setReindexDone(false), 3000);
+        },
+        onError: (e) => setReindexError("重建失败: " + e.message),
+      });
     } catch (err) {
       setReindexError("重建失败: " + err.message);
       if (err.code === "provider_not_configured") setNeedsOnboarding(true);
     } finally {
       setReindexing(false);
+      setReindexProgress(null);
     }
   };
 
@@ -745,6 +761,23 @@ export default function Settings() {
                     </button>
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <Label className={labelClass}>单批文本数 (Batch Size)</Label>
+                  <Input
+                    className={cn(inputClass, "max-w-[160px]")}
+                    type="number"
+                    min={1}
+                    max={2048}
+                    value={embApiBatchSize}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      setEmbApiBatchSize(Number.isNaN(v) ? 1 : Math.min(2048, Math.max(1, v)));
+                    }}
+                  />
+                  <div className="text-[12px] text-dim/70">
+                    每次请求的文本条数上限，因服务商而异（如 DashScope 10、OpenAI 可上千）。默认 10 最稳妥，按你的服务商上限调大；超限会报 400。
+                  </div>
+                </div>
               </div>
             )}
 
@@ -784,33 +817,65 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border/40 pt-5">
-              <Button
-                variant="outline"
-                onClick={handleRebuildIndex}
-                disabled={reindexing}
-                className="h-10 rounded-xl"
-              >
-                {reindexing ? (
-                  <>
-                    <Loader2 size={15} className="mr-1.5 animate-spin" /> 重建中…
-                  </>
-                ) : (
-                  <>
-                    <RotateCw size={15} className="mr-1.5" /> 更新向量索引
-                  </>
-                )}
-              </Button>
-              {reindexDone ? (
-                <span className="flex items-center gap-1.5 text-[13px] text-emerald-500">
-                  <Check size={15} /> 已重建
-                </span>
-              ) : reindexError ? (
-                <span className="text-[13px] text-red-500">{reindexError}</span>
-              ) : (
-                <span className="text-[12px] text-dim">
-                  更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
-                </span>
+            <div className="mt-6 space-y-3 border-t border-border/40 pt-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  variant="outline"
+                  onClick={handleRebuildIndex}
+                  disabled={reindexing}
+                  className="h-10 rounded-xl"
+                >
+                  {reindexing ? (
+                    <>
+                      <Loader2 size={15} className="mr-1.5 animate-spin" /> 重建中…
+                    </>
+                  ) : (
+                    <>
+                      <RotateCw size={15} className="mr-1.5" /> 更新向量索引
+                    </>
+                  )}
+                </Button>
+                {!reindexing &&
+                  (reindexDone ? (
+                    <span className="flex items-center gap-1.5 text-[13px] text-emerald-500">
+                      <Check size={15} /> 已重建
+                    </span>
+                  ) : reindexError ? (
+                    <span className="text-[13px] text-red-500">{reindexError}</span>
+                  ) : lastReindexAt ? (
+                    <span className="text-[12px] text-dim">
+                      上次更新：{lastReindexAt.replace("T", " ").slice(0, 16)}
+                    </span>
+                  ) : (
+                    <span className="text-[12px] text-dim">
+                      更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
+                    </span>
+                  ))}
+              </div>
+
+              {reindexing && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[12px] text-dim">
+                    <span className="truncate">
+                      {reindexProgress
+                        ? `${reindexProgress.label}${reindexProgress.status === "error" ? "（失败，已跳过）" : "…"}`
+                        : "准备中…"}
+                    </span>
+                    <span className="shrink-0 tabular-nums">
+                      {reindexProgress ? `${reindexProgress.completed}/${reindexProgress.total}` : ""}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-border/60">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-300"
+                      style={{
+                        width: reindexProgress?.total
+                          ? `${Math.round((reindexProgress.completed / reindexProgress.total) * 100)}%`
+                          : "0%",
+                      }}
+                    />
+                  </div>
+                </div>
               )}
             </div>
           </CardContent>

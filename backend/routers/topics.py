@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth import get_current_user
 from backend.config import settings
-from backend.indexer import _index_cache, load_topics, save_topics
+from backend.indexer import invalidate_topic, load_topics, save_topics
 
 router = APIRouter(prefix="/api")
 
@@ -58,5 +58,5 @@ def delete_topic(key: str, user_id: str = Depends(get_current_user)):
 
     del topics[key]
     save_topics(topics, user_id)
-    _index_cache.pop((user_id, key), None)
+    invalidate_topic(key, user_id)
     return {"ok": True}

@@ -18,6 +18,19 @@ function toTimestamp(value) {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
+// 知识轴薄弱点显著性:recency × frequency 衰减,与后端 _weak_point_weight 对齐。
+// 长期不再暴露的点逐渐沉底而非被硬切,纯排序信号。
+const WEAK_POINT_HALF_LIFE_DAYS = 30;
+
+export function weakPointWeight(item, now = Date.now()) {
+  const lastSeen = toTimestamp(item.last_seen || item.first_seen);
+  const days = lastSeen ? Math.max(0, (now - lastSeen) / 86400000) : 0;
+  const recency = Math.pow(0.5, days / WEAK_POINT_HALF_LIFE_DAYS);
+  const timesSeen = item.times_seen || 1;
+  const freqMult = 1 + Math.min(Math.log2(timesSeen > 0 ? timesSeen : 1), 2);
+  return recency * freqMult;
+}
+
 export function formatMinute(value) {
   if (!value) return "--";
   return value.replace("T", " ").slice(0, 16);
@@ -38,6 +51,7 @@ export function sortByDateDesc(list, primaryKey, fallbackKey) {
 }
 
 export function buildPriorityWeaknesses(weakPoints, masteryMap) {
+  const now = Date.now();
   return [...weakPoints]
     .map((item) => {
       const masteryScore = getMasteryScore(masteryMap[item.topic]);
@@ -49,13 +63,13 @@ export function buildPriorityWeaknesses(weakPoints, masteryMap) {
       return {
         ...item,
         masteryScore,
+        weight: weakPointWeight(item, now),
         domainNote: masteryMap[item.topic]?.notes || "",
         reason: reasons.join(" · "),
       };
     })
     .sort((a, b) => {
-      const seenDiff = (b.times_seen || 1) - (a.times_seen || 1);
-      if (seenDiff !== 0) return seenDiff;
+      if (Math.abs(a.weight - b.weight) > 1e-9) return b.weight - a.weight;
 
       const masteryA = a.masteryScore ?? -1;
       const masteryB = b.masteryScore ?? -1;

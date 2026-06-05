@@ -28,6 +28,20 @@ def save_user_provider(user_id: str, llm: LLMSettings, embedding: EmbeddingSetti
     os.chmod(path, 0o600)
 
 
+def load_index_meta(user_id: str) -> dict:
+    """向量索引元数据,目前仅 {last_rebuild_at}。未重建过时为空 dict。"""
+    path = settings.user_index_meta_path(user_id)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_index_meta(user_id: str, meta: dict):
+    path = settings.user_index_meta_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def load_user_settings(user_id: str) -> UserSettings:
     path = settings.user_settings_path(user_id)
     if path.exists():

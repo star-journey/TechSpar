@@ -5,7 +5,7 @@
 
 **把专项训练、简历面试、JD 备面、实时 Copilot 与录音复盘，串成一个持续进化的技术面试闭环。**
 
-[在线 Demo](https://aari.top/) · [快速开始](#快速开始) · [English](README.en.md)
+[在线 Demo](https://techspar.top/) · [快速开始](#快速开始) · [English](README.en.md)
 
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
@@ -71,7 +71,7 @@ TechSpar 要解决的不是“生成更多题”，而是把一次次训练、�
 
 ## 在线体验
 
-直接体验：**[https://aari.top/](https://aari.top/)**
+直接体验：**[https://techspar.top/](https://techspar.top/)**
 
 在登录页**注册一个自己的账号**即可开始——每个账号数据互相隔离。首次登录有两步引导，让你填入**自己的** LLM 和 Embedding API Key（演示环境不共享 key，也不会用到别人的）。
 
@@ -302,7 +302,7 @@ http://localhost:5173/copilot
 
 | Component | Technology |
 | --- | --- |
-| Backend | FastAPI, LangChain, LangGraph, LlamaIndex |
+| Backend | FastAPI, LangChain, LangGraph |
 | Frontend | React 19, React Router v7, Vite, Tailwind CSS v4 |
 | Storage | SQLite, semantic embeddings |
 | Auth | JWT, bcrypt |
@@ -349,6 +349,22 @@ UI 导入会把归档中的数据全部归到当前登录账户（即使原 `use
 
 ---
 
+## 参与贡献
+
+这个项目还在持续打磨，很欢迎你一起把它做得更好。
+
+- **用着别扭、发现 bug、有想法**：直接开个 [Issue](https://github.com/AnnaSuSu/TechSpar/issues) 聊，不用拘谨，把场景说清楚就行。
+- **想动手改**：欢迎直接提 PR——修 bug、补文档、加功能、优化体验都可以。小改动直接发；改动比较大，建议先开个 Issue 对一下方向，免得白做。
+- 接入了新的模型 / 服务商、或者跑通了某个部署方式，也很欢迎回来分享一下，让后面的人少踩坑。
+
+不管是一行错别字还是一个新功能，都算数。:)
+
+---
+
 ## License
 
 CC BY-NC 4.0
+
+## 致谢
+
+感谢 [LINUX DO](https://linux.do/) 社区的支持。

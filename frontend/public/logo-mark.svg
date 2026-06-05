@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 838 754" role="img" aria-label="TechSpar">
+  <style>
+    .peak{fill:#292a2a}
+    @media (prefers-color-scheme:dark){.peak{fill:#fafafa}}
+  </style>
+  <g shape-rendering="geometricPrecision">
+    <polygon class="peak" points="756,252 505,452 348,266 211,375 317,376 491,582 756,371"/>
+    <polygon fill="#14b8a6" points="647,279 538,278 366,74 102,284 102,398 351,202 510,386"/>
+  </g>
+</svg>

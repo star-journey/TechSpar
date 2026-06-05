@@ -19,7 +19,7 @@ from backend.graphs.job_prep import (
 from backend.graphs.review import generate_review
 from backend.graphs.topic_drill import evaluate_drill_answers, generate_drill_questions
 from backend.indexer import load_topics
-from backend.memory import get_profile, llm_update_profile, update_profile_after_interview, update_target_role
+from backend.memory import extract_behavior_ops, get_profile, llm_update_profile, update_profile_after_interview, update_target_role
 from backend.models import (
     ChatRequest,
     EndDrillRequest,
@@ -610,7 +610,11 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
                 if weak_point and isinstance(score_value, (int, float)):
                     update_weak_point_sr(topic, weak_point, score_value, user_id)
 
-            asyncio.run(_update_drill_profile(session_id, topic, overall, scores, len(questions), user_id, merged_weak_points))
+            asyncio.run(_update_drill_profile(
+                session_id, topic, overall, scores, len(questions), user_id,
+                weak_points=merged_weak_points,
+                transcript=_qa_transcript(questions, answers),
+            ))
         except Exception:
             logger.exception("Post-review updates failed for drill session %s", session_id)
         _drill_sessions.pop(session_id, None)
@@ -641,7 +645,10 @@ def _end_jd_prep_background(session_id, questions, answers, preview, meta, user_
         _task_status[session_id] = {"status": "done", "type": "jd_review", "user_id": user_id}
 
         try:
-            asyncio.run(_update_job_prep_profile(session_id, overall, scores, len(questions), meta, user_id))
+            asyncio.run(_update_job_prep_profile(
+                session_id, overall, scores, len(questions), meta, user_id,
+                transcript=_qa_transcript(questions, answers),
+            ))
         except Exception:
             logger.exception("Post-review updates failed for JD prep session %s", session_id)
         _job_prep_sessions.pop(session_id, None)
@@ -830,6 +837,19 @@ async def get_session_for_resume(session_id: str, user_id: str):
     }
 
 
+def _qa_transcript(questions: list, answers: list) -> str:
+    """Flatten answered Q&A pairs into a transcript for behavior extraction."""
+    answer_map = {a["question_id"]: a["answer"] for a in answers}
+    lines = []
+    for q in questions:
+        ans = answer_map.get(q["id"], "")
+        if not ans:
+            continue
+        lines.append(f"面试官: {q['question']}")
+        lines.append(f"候选人: {ans}")
+    return "\n".join(lines)
+
+
 async def _update_drill_profile(
     session_id: str,
     topic: str,
@@ -838,6 +858,7 @@ async def _update_drill_profile(
     total_questions: int,
     user_id: str,
     weak_points: list[dict] | None = None,
+    transcript: str = "",
 ):
     """Update profile from drill evaluation — Mem0-style LLM update."""
     valid = []
@@ -858,6 +879,8 @@ async def _update_drill_profile(
         mastery["coverage"] = round(coverage, 2)
     mastery.pop("level", None)
 
+    behavior_ops = await extract_behavior_ops(transcript, user_id, mode="topic_drill", topic=topic)
+
     await llm_update_profile(
         mode="topic_drill",
         topic=topic,
@@ -870,11 +893,20 @@ async def _update_drill_profile(
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
         answer_count=len(scores),
-        behavior_ops=overall.get("behavior_signals", []),
+        behavior_ops=behavior_ops,
         session_id=session_id,
     )
 
-async def _update_job_prep_profile(session_id: str, overall: dict, scores: list, total_questions: int, meta: dict, user_id: str):
+
+async def _update_job_prep_profile(
+    session_id: str,
+    overall: dict,
+    scores: list,
+    total_questions: int,
+    meta: dict,
+    user_id: str,
+    transcript: str = "",
+):
     """Update profile from JD prep evaluation."""
     valid = []
     for score in scores:
@@ -889,6 +921,8 @@ async def _update_job_prep_profile(session_id: str, overall: dict, scores: list,
     if role_fit:
         summary = f"{summary}\n\n岗位匹配度判断: {role_fit}".strip()
 
+    behavior_ops = await extract_behavior_ops(transcript, user_id, mode="jd_prep", topic=topic)
+
     await llm_update_profile(
         mode="jd_prep",
         topic=topic,
@@ -902,7 +936,7 @@ async def _update_job_prep_profile(session_id: str, overall: dict, scores: list,
         avg_score=overall.get("avg_score"),
         answer_count=len(valid),
         dimension_scores=overall.get("dimension_scores"),
-        behavior_ops=overall.get("behavior_signals", []),
+        behavior_ops=behavior_ops,
         session_id=session_id,
     )
 

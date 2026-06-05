@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -307,6 +308,25 @@ async def update_target_role(user_id: str, target_role: str) -> None:
         _save_profile(profile, user_id)
 
 
+# Weak-point salience decay: rank active weak points by recency × frequency so a
+# point not re-exposed in training gradually sinks instead of being hard-cut at a
+# fixed age cliff. Pure ranking signal — never persisted. HALF_LIFE ≈ idle days that
+# halve salience; repeated occurrences slow the sink (capped at +2×).
+WEAK_POINT_HALF_LIFE_DAYS = 30
+
+
+def _weak_point_weight(wp: dict, now: datetime) -> float:
+    last_seen = wp.get("last_seen") or wp.get("first_seen") or ""
+    try:
+        days = max(0.0, (now - datetime.fromisoformat(last_seen)).total_seconds() / 86400)
+    except (ValueError, TypeError):
+        days = 0.0  # missing/bad timestamp → treat as fresh, don't penalize
+    recency = 0.5 ** (days / WEAK_POINT_HALF_LIFE_DAYS)
+    times_seen = wp.get("times_seen", 1) or 1
+    freq_mult = 1.0 + min(math.log2(times_seen), 2.0)
+    return recency * freq_mult
+
+
 def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     """Get personalized context for drill question generation."""
     from backend.storage.sessions import list_recent_drill_questions, list_sessions_by_topic
@@ -318,23 +338,29 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     mastery_notes = mastery.get("notes", "新领域，暂无历史数据" if mastery_score == 0 else "")
     mastery_info = f"{mastery_score}/100 — {mastery_notes}"
 
+    # Weak points for this topic (knowledge only — legacy axis=performance excluded),
+    # seeded from the profile most-salient-first via recency×frequency decay, then
+    # augmented from past sessions below.
     profile_weak_points = profile.get("weak_points", [])
     inactive_points = {
         _clean_point_text(w.get("point", ""))
         for w in profile_weak_points
         if w.get("topic") == topic and (w.get("improved") or w.get("archived"))
     }
+    now = datetime.now()
+    active_topic_wps = [
+        w for w in profile_weak_points
+        if w.get("topic") == topic
+        and not w.get("improved")
+        and not w.get("archived")
+        and w.get("axis") != "performance"
+    ]
+    active_topic_wps.sort(key=lambda w: _weak_point_weight(w, now), reverse=True)
     seen_weak = set()
     topic_weak = []
-    for item in profile_weak_points:
+    for item in active_topic_wps:
         point = _clean_point_text(item.get("point", ""))
-        if (
-            item.get("topic") == topic
-            and point
-            and not item.get("improved")
-            and not item.get("archived")
-            and item.get("axis") != "performance"
-        ):
+        if point and point not in seen_weak:
             topic_weak.append(point)
             seen_weak.add(point)
 
@@ -408,64 +434,6 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     }
 
 
-async def update_profile_realtime(
-    mode: str,
-    topic: str | None,
-    user_id: str,
-    score_entry: dict | None = None,
-    weak_point: str | None = None,
-):
-    """Lightweight per-answer profile update — no LLM call, just save the data."""
-    async with _get_profile_lock(user_id):
-        profile = _load_profile(user_id)
-        now = datetime.now().isoformat()
-
-        # Record score
-        if score_entry and score_entry.get("score") is not None:
-            history = profile.setdefault("stats", {}).setdefault("score_history", [])
-            history.append({
-                "date": now[:10],
-                "mode": mode,
-                "topic": topic,
-                "avg_score": score_entry["score"],
-                "question": score_entry.get("question", ""),
-                "assessment": score_entry.get("assessment", ""),
-            })
-            # Rolling average
-            recent = [h["avg_score"] for h in history[-30:] if h.get("avg_score")]
-            if recent:
-                profile["stats"]["avg_score"] = round(sum(recent) / len(recent), 1)
-
-        # Record weak point (semantic matching)
-        if weak_point:
-            from backend.vector_memory import find_similar_weak_point
-            match_idx = find_similar_weak_point(weak_point, profile.get("weak_points", []), user_id=user_id)
-            if match_idx is not None:
-                matched = profile["weak_points"][match_idx]
-                matched["times_seen"] = matched.get("times_seen", 1) + 1
-                matched["last_seen"] = now
-                if matched.get("archived"):
-                    matched["archived"] = False
-                    matched.pop("archived_at", None)
-                    matched.setdefault("history", []).append({"date": now, "event": "unarchived"})
-            else:
-                profile.setdefault("weak_points", []).append({
-                    "point": weak_point,
-                    "topic": topic or "",
-                    "source": "observed",
-                    "first_seen": now,
-                    "last_seen": now,
-                    "times_seen": 1,
-                    "improved": False,
-                })
-
-        # Track that we have activity (for profile page display)
-        profile.setdefault("stats", {}).setdefault("total_answers", 0)
-        profile["stats"]["total_answers"] = profile["stats"].get("total_answers", 0) + 1
-
-        _save_profile(profile, user_id)
-
-
 def _active_knowledge_weak_points(profile: dict) -> list[dict]:
     """Knowledge-axis weak points only. Filters out improved, archived, and legacy axis=performance."""
     return [
@@ -506,7 +474,13 @@ def get_profile_summary(user_id: str) -> str:
     parts = []
     active_weak = _active_knowledge_weak_points(profile)
     if active_weak:
-        observed = [_clean_point_text(w.get("point")) for w in active_weak if w.get("source", "observed") == "observed"][:6]
+        now = datetime.now()
+        observed_wps = sorted(
+            (w for w in active_weak if w.get("source", "observed") == "observed"),
+            key=lambda w: _weak_point_weight(w, now),
+            reverse=True,
+        )
+        observed = [_clean_point_text(w.get("point")) for w in observed_wps[:6]]
         predicted = [_clean_point_text(w.get("point")) for w in active_weak if w.get("source") == "predicted"][:4]
         observed = [p for p in observed if p]
         predicted = [p for p in predicted if p]
@@ -666,13 +640,13 @@ def _apply_behavior_ops(profile: dict, ops: list, session_id: str | None, now: s
             # ADD on existing id is degraded to UPDATE
             existing["times_seen"] = existing.get("times_seen", 0) + 1
             existing["last_seen"] = now
+            snippet = (op.get("snippet") or "").strip()
             if existing.get("improved"):
                 existing["improved"] = False
-                existing.setdefault("history", []).append({
-                    "date": now,
-                    "event": "regressed",
-                })
-            snippet = (op.get("snippet") or "").strip()
+                regressed_event = {"date": now, "event": "regressed"}
+                if snippet:
+                    regressed_event["evidence"] = snippet
+                existing.setdefault("history", []).append(regressed_event)
             if snippet:
                 examples = existing.setdefault("examples", [])
                 examples.append({
@@ -699,6 +673,23 @@ def _apply_behavior_ops(profile: dict, ops: list, session_id: str | None, now: s
             tally["rejected"] += 1
 
     return tally
+
+
+def _regress_if_improved(wp: dict, now: str, evidence: str = "") -> bool:
+    """Flip a previously-improved weak point back to active when it resurfaces.
+
+    Knowledge gaps were one-way latched (improved could never revert), unlike
+    behavior_signals. This mirrors that regression path: a "fixed" gap observed
+    again is no longer fixed. Returns True if a regression was recorded.
+    """
+    if not wp.get("improved"):
+        return False
+    wp["improved"] = False
+    event = {"date": now, "event": "regressed"}
+    if evidence:
+        event["evidence"] = evidence
+    wp.setdefault("history", []).append(event)
+    return True
 
 
 def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, user_id: str = "",
@@ -748,6 +739,7 @@ def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str, use
                     wp["archived"] = False
                     wp.pop("archived_at", None)
                     wp.setdefault("history", []).append({"date": now, "event": "unarchived"})
+                _regress_if_improved(wp, now, evidence=new_text or wp.get("point", ""))
 
     for imp in ops.get("improvements", []):
         idx = imp.get("weak_index")
@@ -788,6 +780,7 @@ def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
                 matched["archived"] = False
                 matched.pop("archived_at", None)
                 matched.setdefault("history", []).append({"date": now, "event": "unarchived"})
+            _regress_if_improved(matched, now, evidence=point)
         else:
             profile.setdefault("weak_points", []).append({
                 "point": point,
@@ -913,11 +906,14 @@ def _update_thinking_patterns(profile: dict, patterns: dict, user_id: str):
 
 
 def _archive_stale_weak_points(profile: dict):
-    """Archive weak points not seen recently — keeps them in profile but out of active prompts.
+    """Long-horizon graveyard cleanup — caps unbounded growth of one-off weak points.
+
+    Day-to-day prioritization is handled by recency decay (_weak_point_weight), so this
+    only archives points that are both very old and never recurred. Archived points stay
+    in profile (file-as-truth) but drop out of active prompts/views.
 
     Rules:
-    - last_seen > 60 days → archive regardless
-    - last_seen > 30 days AND times_seen <= 2 → archive
+    - last_seen > 180 days AND times_seen <= 1 → archive
     - Already improved/archived → skip
     - source == "consolidated" → skip (refreshed by re-running consolidation, not by time)
     """
@@ -936,7 +932,7 @@ def _archive_stale_weak_points(profile: dict):
             continue
         days_since = (now - last_seen).days
         times_seen = wp.get("times_seen", 1)
-        if days_since > 60 or (days_since > 30 and times_seen <= 2):
+        if days_since > 180 and times_seen <= 1:
             wp["archived"] = True
             wp["archived_at"] = now.isoformat()
             wp.setdefault("history", []).append({
@@ -1143,6 +1139,78 @@ def _format_existing_behavior_signals(profile: dict) -> str:
         parts.append(f"### {ns} (异常 namespace, 仅展示不复用)\n" + "\n".join(by_ns[ns]))
 
     return "\n\n".join(parts)
+
+
+BEHAVIOR_EXTRACT_PROMPT = """你是面试教练的行为分析引擎。从面试记录里提取候选人作为面试者的「表现轴」行为模式。
+只看"怎么表达、怎么思考、怎么讲项目、怎么自评",不评判知识对错。
+
+## 候选人已有的 behavior_signals（优先复用这些 ID，不要起新名字除非真的不同）
+{existing_behavior_signals}
+
+## 本次面试记录
+模式: {mode}
+领域: {topic}
+{transcript}
+
+## 四个 namespace（**锁定，不可创新**）
+- reasoning：推导/思维方式（被追问 why 时如何应对、能否从底层推导、是否跳步）
+- narrative：项目叙事（讲项目的结构、量化指标、技术权衡是否讲清）
+- communication：表达特征（节奏、结构信号、清晰度、口头禅）
+- metacognition：元认知（自我评估准确性、对弱点的觉察、不懂装懂）
+
+## 每个 behavior_signal 是一个 op
+- **ADD**：全新模式。新 ID 格式严格为 `<namespace>.<snake_case_name>`，必须给 polarity（negative|positive）+ description（一句话锚定语义）+ snippet（本次证据）
+- **UPDATE**：复用上面已有 ID。只给 snippet（本次新证据）
+- **IMPROVE**：已有 negative 模式本次出现反向证据。给 evidence_snippet
+- **NOOP**：不输出
+
+ID 复用优先级最高：能用已有 ID 就**绝对不要**起新 ID。namespace 必须在四个里选。
+只提取本次明确暴露的行为，不要猜测。**宁可不输出，不要凑数**——专项问答这类信息量少的场景，没有可靠证据就返回空数组。
+
+## 输出（只返回 JSON）
+{{
+    "behavior_signals": [
+        {{"action": "ADD", "id": "reasoning.jump_to_conclusion", "namespace": "reasoning", "polarity": "negative", "description": "被追问 why 时跳过推导直接给结论", "snippet": "讲为什么用 RAG 时只说'更省钱'就停了"}},
+        {{"action": "UPDATE", "id": "narrative.lack_metrics", "snippet": "讲项目时没有任何数字指标"}}
+    ]
+}}
+"""
+
+
+async def extract_behavior_ops(transcript: str, user_id: str, mode: str, topic: str | None = None) -> list:
+    """Behavior-axis-only extraction for non-resume modes.
+
+    The resume path extracts behavior inside its big EXTRACT_PROMPT; drill / jd_prep /
+    recording extract only the knowledge axis in their own graphs. This shared pass gives
+    them the behavior axis too — always with the existing-signals prior so emergent IDs
+    stay deduplicated instead of fragmenting. Returns behavior_ops for llm_update_profile.
+
+    Copilot is intentionally NOT a caller: it writes predicted gaps, not observed answers,
+    so it has no transcript to judge behavior from.
+    """
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return []
+
+    profile = _load_profile(user_id)
+    prompt = BEHAVIOR_EXTRACT_PROMPT.format(
+        existing_behavior_signals=_format_existing_behavior_signals(profile),
+        mode=mode,
+        topic=topic or "综合",
+        transcript=transcript,
+    )
+    llm = get_langchain_llm(user_id)
+    response = llm.invoke([
+        SystemMessage(content="你是面试行为分析引擎。只返回 JSON。宁可不输出,不要凑数。"),
+        HumanMessage(content=prompt),
+    ])
+    try:
+        parsed = _parse_json_safe(response.content)
+        ops = parsed.get("behavior_signals", []) if isinstance(parsed, dict) else []
+        return ops if isinstance(ops, list) else []
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.warning(f"Behavior extraction parse failed ({mode}): {exc}")
+        return []
 
 
 async def update_profile_after_interview(

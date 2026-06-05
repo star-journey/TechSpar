@@ -6,6 +6,8 @@ from typing import Annotated, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.graph import add_messages
 
+from backend.config import DEFAULT_API_EMBED_BATCH_SIZE
+
 
 # ── Enums ──
 
@@ -193,6 +195,8 @@ class EmbeddingSettings(BaseModel):
     api_model: str = ""
     local_model: str = ""
     local_path: str = ""
+    # API 单批文本数上限,因服务商而异(如 DashScope 10、OpenAI 上千)。默认保守取小值;仅 API 模式生效。
+    api_batch_size: int = Field(default=DEFAULT_API_EMBED_BATCH_SIZE, ge=1, le=2048)
 
 
 class SystemSettings(BaseModel):
@@ -207,8 +211,9 @@ class SettingsResponse(BaseModel):
     system: SystemSettings = Field(default_factory=SystemSettings)
     training: UserSettings = Field(default_factory=UserSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
-    is_admin: bool = False
-    configured: dict[str, bool] = Field(default_factory=dict)
+    is_admin: bool = False  # GET-only; ignored on PUT
+    configured: dict[str, bool] = Field(default_factory=dict)  # GET-only: {llm, embedding}
+    last_reindex_at: str = ""  # GET-only: 上次向量索引重建时间(ISO),未重建过为空
 
 class VoiceprintCredentials(BaseModel):
     """腾讯云 VPR 凭据（per-user）。"""

@@ -3,6 +3,9 @@ from pydantic_settings import BaseSettings
 
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
+# API embedding 单批文本数上限的默认值。各服务商上限不同(如 DashScope 10、OpenAI 可达 2048),
+# 取较保守的 10 作默认,任何服务商都不会超限报 400;用户可在设置里按自己的服务商调大。
+DEFAULT_API_EMBED_BATCH_SIZE = 10
 
 
 # ── Embedding inference (single source of truth) ──
@@ -153,6 +156,10 @@ class Settings(BaseSettings):
 
     def user_index_cache_path(self, user_id: str) -> Path:
         return self.user_data_dir(user_id) / ".index_cache"
+
+    def user_index_meta_path(self, user_id: str) -> Path:
+        """向量索引元数据(如上次重建时间)。独立于 .index_cache,后者重建时会被整目录清空。"""
+        return self.user_data_dir(user_id) / "index_meta.json"
 
     def user_settings_path(self, user_id: str) -> Path:
         return self.user_data_dir(user_id) / "settings.json"

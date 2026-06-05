@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.auth import get_current_user
-from backend.memory import llm_update_profile
+from backend.memory import extract_behavior_ops, llm_update_profile
 from backend.models import RecordingAnalyzeRequest
 from backend.review_formatters import format_drill_review, format_solo_review
 from backend.runtime import _task_status
@@ -139,7 +139,10 @@ def _analyze_recording_background(
                 user_id=user_id,
             )
 
-        asyncio.run(_update_recording_profile(overall, scores, max(len(scores), 1), user_id))
+        asyncio.run(_update_recording_profile(
+            overall, scores, max(len(scores), 1), user_id,
+            transcript=req_transcript, session_id=session_id,
+        ))
 
         _task_status[session_id] = {"status": "done", "type": "recording"}
         logger.info("Recording analysis done for session %s", session_id)
@@ -171,7 +174,8 @@ async def recording_analyze(
     return {"session_id": session_id, "status": "pending"}
 
 
-async def _update_recording_profile(overall: dict, scores: list, total_items: int, user_id: str):
+async def _update_recording_profile(overall: dict, scores: list, total_items: int, user_id: str,
+                                    transcript: str = "", session_id: str | None = None):
     """Update profile from recording analysis — no single topic, points carry their own topic."""
     valid = []
     for score in scores:
@@ -179,6 +183,8 @@ async def _update_recording_profile(overall: dict, scores: list, total_items: in
             valid.append(float(score["score"]))
         except (TypeError, ValueError, KeyError):
             pass
+
+    behavior_ops = await extract_behavior_ops(transcript, user_id, mode="recording", topic=None)
 
     await llm_update_profile(
         mode="recording",
@@ -192,4 +198,6 @@ async def _update_recording_profile(overall: dict, scores: list, total_items: in
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
         answer_count=len(valid),
+        behavior_ops=behavior_ops,
+        session_id=session_id,
     )

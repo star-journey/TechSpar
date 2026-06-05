@@ -1,20 +1,41 @@
-"""LlamaIndex indexing for resume and interview knowledge base."""
+"""Lightweight RAG over the user's resume and knowledge bases.
+
+Replaces LlamaIndex with: pypdf / plain-text loading, paragraph-aware chunking,
+the user's embedding model, and numpy brute-force retrieval. Chunk vectors live in
+the shared `memory_vectors` table (chunk_type 'resume_chunk' / 'topic_chunk'), so
+there is one vector store and one invalidation path. The resume PDF and knowledge
+files stay the source of truth; vectors are a rebuildable cache (lazily built on
+first query, force-rebuilt from Settings → 更新向量索引).
+"""
 import json
+import logging
+import shutil
+from datetime import datetime
 from pathlib import Path
 
-from llama_index.core import (
-    SimpleDirectoryReader,
-    VectorStoreIndex,
-    StorageContext,
-    load_index_from_storage,
-)
+import numpy as np
 
 from backend.config import settings
-from backend.llm_provider import get_llama_llm, get_embedding
+from backend.llm_provider import get_copilot_llm, get_embedding
+from backend.vector_memory import (
+    _cosine_similarity,
+    _deserialize,
+    _embed,
+    _get_conn,
+    _serialize,
+)
 
-# In-memory index cache keyed by (user_id, topic_or_resume)
-_index_cache: dict[tuple[str, str], "VectorStoreIndex"] = {}
+logger = logging.getLogger("uvicorn")
 
+RESUME_CHUNK = "resume_chunk"
+TOPIC_CHUNK = "topic_chunk"
+
+CHUNK_SIZE = 1000       # chars per chunk (CJK-friendly; ~数百 token)
+CHUNK_OVERLAP = 150     # char overlap carried between adjacent chunks
+TOPIC_EXTS = {".md", ".txt", ".py"}
+
+
+# ── Topics registry (topics.json) — not vector-related ──
 
 def load_topics(user_id: str) -> dict:
     """Load topics from user's topics.json. Returns {key: {name, icon, dir}}."""
@@ -42,126 +63,232 @@ def get_topic_map(user_id: str) -> dict[str, str]:
     return {k: v["dir"] for k, v in load_topics(user_id).items()}
 
 
-def _vector_index_insert_batch_size() -> int:
-    """Return a safe insert batch size for embedding-backed index builds."""
-    return max(1, settings.openai_embedding_max_batch_size)
+# ── Document loading ──
+
+def _read_pdf(path: Path) -> str:
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(str(path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception as exc:  # noqa: BLE001 - corrupt/locked PDF shouldn't crash ingest
+        logger.warning("Failed to read PDF %s: %s", path, exc)
+        return ""
 
 
-def build_resume_index(user_id: str, force_rebuild: bool = False) -> VectorStoreIndex:
-    """Build or load the resume index (embedded with the user's own embedding model)."""
-    cache_key = (user_id, "resume")
-    if cache_key in _index_cache and not force_rebuild:
-        return _index_cache[cache_key]
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        logger.warning("Failed to read %s: %s", path, exc)
+        return ""
 
-    embed_model = get_embedding(user_id)
-    resume_path = settings.user_resume_path(user_id)
-    cache_dir = settings.user_index_cache_path(user_id) / "resume"
 
-    if cache_dir.exists() and not force_rebuild:
-        storage_context = StorageContext.from_defaults(persist_dir=str(cache_dir))
-        index = load_index_from_storage(storage_context, embed_model=embed_model)
-    else:
-        docs = SimpleDirectoryReader(
-            input_dir=str(resume_path),
-            recursive=True,
-        ).load_data()
-        index = VectorStoreIndex.from_documents(
-            docs,
-            embed_model=embed_model,
-            insert_batch_size=_vector_index_insert_batch_size(),
+# ── Chunking ──
+
+def _chunk_text(text: str) -> list[str]:
+    """Paragraph-aware splitter with char overlap. Good enough for resumes and
+    curated knowledge markdown at this scale — no token counting needed."""
+    text = text.strip()
+    if not text:
+        return []
+
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    cur = ""
+    for p in paras:
+        if cur and len(cur) + len(p) + 2 > CHUNK_SIZE:
+            chunks.append(cur)
+            tail = cur[-CHUNK_OVERLAP:] if CHUNK_OVERLAP else ""
+            cur = f"{tail}\n\n{p}" if tail else p
+        else:
+            cur = f"{cur}\n\n{p}" if cur else p
+    if cur:
+        chunks.append(cur)
+
+    # Hard-split any oversized chunk (e.g. one giant paragraph with no blank lines).
+    out: list[str] = []
+    step = max(1, CHUNK_SIZE - CHUNK_OVERLAP)
+    for c in chunks:
+        if len(c) <= CHUNK_SIZE * 2:
+            out.append(c)
+        else:
+            out.extend(c[i:i + CHUNK_SIZE] for i in range(0, len(c), step))
+    return out
+
+
+# ── Storage (shared memory_vectors table) ──
+
+def _delete_chunks(user_id: str, chunk_type: str, topic: str | None):
+    conn = _get_conn()
+    if topic is None:
+        conn.execute(
+            "DELETE FROM memory_vectors WHERE chunk_type = ? AND user_id = ?",
+            (chunk_type, user_id),
         )
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        index.storage_context.persist(persist_dir=str(cache_dir))
+    else:
+        conn.execute(
+            "DELETE FROM memory_vectors WHERE chunk_type = ? AND topic = ? AND user_id = ?",
+            (chunk_type, topic, user_id),
+        )
+    conn.commit()
+    conn.close()
 
-    _index_cache[cache_key] = index
-    return index
 
-
-def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> VectorStoreIndex:
-    """Build or load index for a specific knowledge topic."""
-    cache_key = (user_id, topic)
-    if cache_key in _index_cache and not force_rebuild:
-        return _index_cache[cache_key]
+def _store_chunks(user_id: str, chunk_type: str, topic: str | None, items: list[tuple[str, str]]) -> int:
+    """Replace all chunks of (chunk_type, topic) with `items` [(text, source)]."""
+    _delete_chunks(user_id, chunk_type, topic)
+    if not items:
+        return 0
 
     embed_model = get_embedding(user_id)
+    vectors = embed_model.get_text_embedding_batch([text for text, _ in items])
 
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    for (text, source), vec in zip(items, vectors):
+        blob = _serialize(np.array(vec, dtype=np.float32))
+        meta = json.dumps({"source": source})
+        conn.execute(
+            "INSERT INTO memory_vectors (chunk_type, content, topic, session_id, metadata, embedding, user_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chunk_type, text, topic, None, meta, blob, user_id, now),
+        )
+    conn.commit()
+    conn.close()
+    return len(items)
+
+
+# ── Ingestion (force-rebuild a source's vectors) ──
+
+def ingest_resume(user_id: str) -> int:
+    """(Re)build resume chunk vectors from the user's PDF(s)."""
+    resume_dir = settings.user_resume_path(user_id)
+    items: list[tuple[str, str]] = []
+    if resume_dir.exists():
+        for pdf in sorted(resume_dir.glob("*.pdf")):
+            items.extend((c, pdf.name) for c in _chunk_text(_read_pdf(pdf)))
+    n = _store_chunks(user_id, RESUME_CHUNK, None, items)
+    logger.info("Ingested %d resume chunks for user %s.", n, user_id)
+    return n
+
+
+def ingest_topic(topic: str, user_id: str) -> int:
+    """(Re)build knowledge-base chunk vectors for a topic."""
     topic_map = get_topic_map(user_id)
     if topic not in topic_map:
         raise ValueError(f"Unknown topic: {topic}. Available: {list(topic_map.keys())}")
 
-    dir_name = topic_map[topic]
-    topic_dir = settings.user_knowledge_path(user_id) / dir_name
-    cache_dir = settings.user_index_cache_path(user_id) / topic
+    topic_dir = settings.user_knowledge_path(user_id) / topic_map[topic]
+    items: list[tuple[str, str]] = []
+    if topic_dir.exists():
+        for path in sorted(topic_dir.rglob("*")):
+            if path.is_file() and path.suffix.lower() in TOPIC_EXTS:
+                items.extend((c, path.name) for c in _chunk_text(_read_text(path)))
+    n = _store_chunks(user_id, TOPIC_CHUNK, topic, items)
+    logger.info("Ingested %d chunks for topic '%s' (user %s).", n, topic, user_id)
+    return n
 
-    if cache_dir.exists() and not force_rebuild:
-        storage_context = StorageContext.from_defaults(persist_dir=str(cache_dir))
-        index = load_index_from_storage(storage_context, embed_model=embed_model)
+
+# ── Source presence (gates lazy ingest so empty corpora don't re-ingest each call) ──
+
+def _resume_has_pdf(user_id: str) -> bool:
+    resume_dir = settings.user_resume_path(user_id)
+    return resume_dir.exists() and any(p.suffix.lower() == ".pdf" for p in resume_dir.iterdir())
+
+
+def _topic_has_docs(topic: str, user_id: str) -> bool:
+    topic_map = get_topic_map(user_id)
+    if topic not in topic_map:
+        return False
+    topic_dir = settings.user_knowledge_path(user_id) / topic_map[topic]
+    return topic_dir.exists() and any(
+        p.is_file() and p.suffix.lower() in TOPIC_EXTS for p in topic_dir.rglob("*")
+    )
+
+
+# ── Retrieval (numpy brute-force cosine) ──
+
+def _retrieve(user_id: str, chunk_type: str, topic: str | None, query: str, top_k: int) -> list[str]:
+    conn = _get_conn()
+    if topic is None:
+        rows = conn.execute(
+            "SELECT content, embedding FROM memory_vectors WHERE chunk_type = ? AND user_id = ?",
+            (chunk_type, user_id),
+        ).fetchall()
     else:
-        if not topic_dir.exists():
-            raise FileNotFoundError(f"Knowledge directory not found: {topic_dir}")
+        rows = conn.execute(
+            "SELECT content, embedding FROM memory_vectors WHERE chunk_type = ? AND topic = ? AND user_id = ?",
+            (chunk_type, topic, user_id),
+        ).fetchall()
+    conn.close()
+    if not rows:
+        return []
 
-        docs = SimpleDirectoryReader(
-            input_dir=str(topic_dir),
-            recursive=True,
-            required_exts=[".md", ".txt", ".py"],
-        ).load_data()
+    query_vec = _embed(query, user_id)
+    matrix = np.stack([_deserialize(r["embedding"]) for r in rows])
+    sims = _cosine_similarity(query_vec, matrix)
+    order = np.argsort(sims)[::-1][:top_k]
+    return [rows[i]["content"] for i in order]
 
-        if not docs:
-            raise ValueError(f"No documents found in {topic_dir}")
 
-        index = VectorStoreIndex.from_documents(
-            docs,
-            embed_model=embed_model,
-            insert_batch_size=_vector_index_insert_batch_size(),
-        )
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        index.storage_context.persist(persist_dir=str(cache_dir))
-
-    _index_cache[cache_key] = index
-    return index
+def _synthesize(question: str, chunks: list[str], user_id: str) -> str:
+    """Stuff retrieved chunks into the prompt and let the user's LLM answer."""
+    context = "\n\n---\n\n".join(chunks)
+    prompt = (
+        "你是简历检索助手。仅依据下面的简历片段回答问题,片段中没有的信息不要编造。\n\n"
+        f"简历片段:\n{context}\n\n问题:{question}\n\n回答:"
+    )
+    resp = get_copilot_llm(user_id).invoke(prompt)
+    return (getattr(resp, "content", None) or str(resp)).strip()
 
 
 def query_resume(question: str, user_id: str, top_k: int = 3) -> str:
-    """Query the resume index."""
-    index = build_resume_index(user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k, llm=get_llama_llm(user_id))
-    response = engine.query(question)
-    return str(response)
-
-
-def query_topic(topic: str, question: str, user_id: str, top_k: int = 5) -> str:
-    """Query a topic knowledge base."""
-    index = build_topic_index(topic, user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k, llm=get_llama_llm(user_id))
-    response = engine.query(question)
-    return str(response)
+    """Retrieve resume chunks and synthesize an answer. Lazily ingests on first use;
+    returns '' when no resume is uploaded."""
+    chunks = _retrieve(user_id, RESUME_CHUNK, None, question, top_k)
+    if not chunks and _resume_has_pdf(user_id):
+        ingest_resume(user_id)
+        chunks = _retrieve(user_id, RESUME_CHUNK, None, question, top_k)
+    if not chunks:
+        return ""
+    return _synthesize(question, chunks, user_id)
 
 
 def retrieve_topic_context(topic: str, question: str, user_id: str, top_k: int = 5) -> list[str]:
-    """Retrieve raw text chunks from topic index (for answer evaluation)."""
-    index = build_topic_index(topic, user_id)
-    retriever = index.as_retriever(similarity_top_k=top_k)
-    nodes = retriever.retrieve(question)
-    return [node.get_content() for node in nodes]
+    """Top-k raw knowledge chunks for a topic (lazily ingests on first use)."""
+    chunks = _retrieve(user_id, TOPIC_CHUNK, topic, question, top_k)
+    if not chunks and _topic_has_docs(topic, user_id):
+        ingest_topic(topic, user_id)
+        chunks = _retrieve(user_id, TOPIC_CHUNK, topic, question, top_k)
+    return chunks
+
+
+# ── Invalidation ──
+
+def invalidate_resume(user_id: str):
+    """Drop stored resume chunk vectors (called when the resume file changes)."""
+    _delete_chunks(user_id, RESUME_CHUNK, None)
+
+
+def invalidate_topic(topic: str, user_id: str):
+    """Drop stored chunk vectors for a topic (called when its docs change)."""
+    _delete_chunks(user_id, TOPIC_CHUNK, topic)
 
 
 def invalidate_user_embeddings(user_id: str):
-    """Drop everything embedded with the user's previous embedding model: in-memory
-    and on-disk LlamaIndex caches, the cached embedding instance, and memory_vectors
-    rows. Called when a user changes embedding config (vectors become incompatible)."""
-    import shutil
-
+    """Drop everything embedded with the user's previous embedding model: the cached
+    embedding client, all memory_vectors rows (weak points + resume/topic chunks),
+    and cached question embeddings. Called when a user changes embedding config."""
     from backend.graph import clear_user_question_embeddings
     from backend.llm_provider import reset_embedding_cache
     from backend.vector_memory import clear_user_vectors
 
-    for key in [k for k in _index_cache if k[0] == user_id]:
-        _index_cache.pop(key, None)
-
-    cache_dir = settings.user_index_cache_path(user_id)
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir, ignore_errors=True)
-
     reset_embedding_cache(user_id)
-    clear_user_vectors(user_id)
+    clear_user_vectors(user_id)  # clears ALL memory_vectors, incl. resume/topic chunks
     clear_user_question_embeddings(user_id)
+
+    # Best-effort cleanup of the legacy LlamaIndex on-disk caches (no longer used).
+    legacy = settings.user_index_cache_path(user_id)
+    if legacy.exists():
+        shutil.rmtree(legacy, ignore_errors=True)
