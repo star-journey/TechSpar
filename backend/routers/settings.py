@@ -12,9 +12,11 @@ from backend.config import settings
 from backend.llm_provider import embedding_signature, provider_status, reset_embedding_cache
 from backend.models import EmbeddingSettings, LLMSettings, STTSettings, SettingsResponse, SystemSettings
 from backend.storage.user_settings import (
+    apply_global_settings,
     load_index_meta,
     load_user_provider,
     load_user_settings,
+    save_global_settings,
     save_index_meta,
     save_user_provider,
     save_user_settings,
@@ -76,19 +78,15 @@ def put_user_settings(payload: SettingsResponse, user_id: str = Depends(get_curr
         invalidate_user_embeddings(user_id)
 
     if is_admin_user(user_id):
-        settings.allow_registration = payload.system.allow_registration
         if payload.stt is not None:
-            stt = payload.stt
-            settings.stt_provider = stt.provider or "dashscope"
-            settings.dashscope_api_key = stt.dashscope_api_key
-            settings.azure_speech_key = stt.azure_speech_key
-            settings.azure_speech_region = stt.azure_speech_region
-            settings.azure_speech_locales = stt.azure_speech_locales
-            settings.soniox_api_key = stt.soniox_api_key
-            settings.soniox_model = stt.soniox_model
-            settings.elevenlabs_api_key = stt.elevenlabs_api_key
-            settings.elevenlabs_model = stt.elevenlabs_model
-            settings.qwencloud_api_key = stt.qwencloud_api_key
+            apply_global_settings(payload.stt, payload.system)
+        else:
+            settings.allow_registration = payload.system.allow_registration
+        # 始终落盘当前完整全局状态(从 settings 重建),跨进程重启/应用更新保留。
+        save_global_settings(
+            _stt_settings(include_secrets=True),
+            SystemSettings(allow_registration=settings.allow_registration),
+        )
 
     save_user_settings(payload.training, user_id)
     return {"ok": True, "embedding_changed": embedding_changed}

@@ -24,6 +24,8 @@ data/topics.json
 !data/high_freq/.gitkeep
 data/interviews.db
 data/langgraph_checkpoints.sqlite
+# 全局(部署级)设置:STT key/region + 系统开关。管理员在「设置」里保存后落盘于此,含密钥。
+data/system_settings.json
 # SQLite WAL mode 运行时的 journal 文件，和 *.sqlite/*.db 一起出现
 *.sqlite-wal
 *.sqlite-shm

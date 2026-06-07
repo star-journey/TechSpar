@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     def user_provider_path(self, user_id: str) -> Path:
         return self.user_data_dir(user_id) / "provider.json"
 
+    def global_settings_path(self) -> Path:
+        """全局(部署级)设置落盘位置:STT + 系统开关。位于挂载卷 data/ 内,跨更新保留。"""
+        return self.base_dir / "data" / "system_settings.json"
+
     def public_audio_dir(self) -> Path:
         path = self.base_dir / "data" / "public_audio"
         path.mkdir(parents=True, exist_ok=True)
