@@ -30,7 +30,8 @@ class ElevenLabsProvider(STTProvider):
             raise RuntimeError("ELEVENLABS_API_KEY not configured")
         return key
 
-    def _do_transcribe(self, audio_bytes: bytes, suffix: str) -> str:
+    def _do_transcribe(self, audio_bytes: bytes, suffix: str, diarize: bool = False) -> str:
+        # diarize 暂不支持，忽略以兼容统一接口。
         model_id = settings.elevenlabs_model or "scribe_v2"
         files = {"file": (f"audio{suffix}", audio_bytes)}
         data = {"model_id": model_id}

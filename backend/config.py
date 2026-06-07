@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     azure_speech_region: str = ""
     # 留空 → enhancedMode 自动检测语言；填写（逗号分隔）则强制指定语言。
     azure_speech_locales: str = ""
+    # 双人录音说话人分离的最大说话人数（面试默认 2；范围 2–35）。
+    azure_speech_max_speakers: int = 2
 
     # Soniox (async transcription)
     soniox_api_key: str = ""

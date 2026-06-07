@@ -49,7 +49,8 @@ class DashScopeProvider(STTProvider):
             raise RuntimeError("DASHSCOPE_API_KEY not configured")
         return key
 
-    def _do_transcribe(self, audio_bytes: bytes, suffix: str) -> str:
+    def _do_transcribe(self, audio_bytes: bytes, suffix: str, diarize: bool = False) -> str:
+        # diarize 暂不支持（qwen3-asr 无说话人分离），忽略以兼容统一接口。
         if len(audio_bytes) <= _SYNC_MAX_RAW_BYTES:
             return self._transcribe_sync(audio_bytes, suffix)
         return self._transcribe_async(audio_bytes, suffix)

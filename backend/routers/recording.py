@@ -42,7 +42,11 @@ async def recording_transcribe(
         from backend.config import settings
         from backend.stt import get_provider
 
-        text = get_provider(settings.stt_provider).transcribe(audio_bytes, suffix=suffix)
+        # dual（双人面试）模式请求说话人分离，产出带『说话人N：』标记的文本，供
+        # 结构化 prompt 区分面试官/候选人；solo 模式保持干净纯文本。
+        text = get_provider(settings.stt_provider).transcribe(
+            audio_bytes, suffix=suffix, diarize=(mode == "dual"),
+        )
         return {"transcript": text, "segments": []}
     except Exception as exc:
         raise HTTPException(500, f"Transcription failed: {exc}")

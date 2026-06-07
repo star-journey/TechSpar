@@ -39,7 +39,8 @@ class SonioxProvider(STTProvider):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._api_key()}"}
 
-    def _do_transcribe(self, audio_bytes: bytes, suffix: str) -> str:
+    def _do_transcribe(self, audio_bytes: bytes, suffix: str, diarize: bool = False) -> str:
+        # diarize 暂不支持，忽略以兼容统一接口。
         session = requests.Session()
         session.headers.update(self._headers())
 

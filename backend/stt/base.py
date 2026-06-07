@@ -22,14 +22,18 @@ class STTProvider(ABC):
     native_formats: set[str] = set()
 
     @abstractmethod
-    def _do_transcribe(self, audio_bytes: bytes, suffix: str) -> str:
-        """子类实现：在此处实际调用厂商 API。`suffix` 已是 native_formats 内的格式。"""
+    def _do_transcribe(self, audio_bytes: bytes, suffix: str, diarize: bool = False) -> str:
+        """子类实现：在此处实际调用厂商 API。`suffix` 已是 native_formats 内的格式。
 
-    def transcribe(self, audio_bytes: bytes, suffix: str) -> str:
+        `diarize` 为 True 时请求说话人分离，并在返回文本中带说话人标记（如『说话人1：…』）。
+        仅部分厂商支持（目前 Azure）；不支持的厂商忽略此参数、返回普通整段文本。
+        """
+
+    def transcribe(self, audio_bytes: bytes, suffix: str, diarize: bool = False) -> str:
         if not audio_bytes:
             raise RuntimeError("empty audio payload")
         prepared_bytes, prepared_suffix = self._prepare(audio_bytes, suffix)
-        return self._do_transcribe(prepared_bytes, prepared_suffix)
+        return self._do_transcribe(prepared_bytes, prepared_suffix, diarize=diarize)
 
     def _prepare(self, audio_bytes: bytes, suffix: str) -> tuple[bytes, str]:
         """格式预处理：命中 native_formats 原样返回；否则 ffmpeg → wav 16k mono。"""
