@@ -1213,10 +1213,10 @@ export default function Settings() {
                   min={5}
                   max={20}
                   value={numQuestions}
-                  onChange={(e) => {
+                  onChange={(e) => setNumQuestions(e.target.value === "" ? "" : Number(e.target.value))}
+                  onBlur={(e) => {
                     const v = parseInt(e.target.value, 10);
-                    if (v >= 5 && v <= 20) setNumQuestions(v);
-                    else if (e.target.value === "") setNumQuestions(5);
+                    setNumQuestions(Number.isNaN(v) ? 10 : Math.min(20, Math.max(5, v)));
                   }}
                 />
                 <div className="text-[12px] text-dim/60">范围 5 – 20，默认 10</div>
@@ -1254,10 +1254,10 @@ export default function Settings() {
                   min={60}
                   max={1800}
                   value={drillGenerationTimeoutSeconds}
-                  onChange={(e) => {
+                  onChange={(e) => setDrillGenerationTimeoutSeconds(e.target.value === "" ? "" : Number(e.target.value))}
+                  onBlur={(e) => {
                     const v = parseInt(e.target.value, 10);
-                    if (v >= 60 && v <= 1800) setDrillGenerationTimeoutSeconds(v);
-                    else if (e.target.value === "") setDrillGenerationTimeoutSeconds(60);
+                    setDrillGenerationTimeoutSeconds(Number.isNaN(v) ? 300 : Math.min(1800, Math.max(60, v)));
                   }}
                 />
                 <div className="text-[12px] text-dim/60">范围 60 – 1800，默认 300</div>
@@ -1271,10 +1271,10 @@ export default function Settings() {
                   min={60}
                   max={1800}
                   value={recordingAnalysisTimeoutSeconds}
-                  onChange={(e) => {
+                  onChange={(e) => setRecordingAnalysisTimeoutSeconds(e.target.value === "" ? "" : Number(e.target.value))}
+                  onBlur={(e) => {
                     const v = parseInt(e.target.value, 10);
-                    if (v >= 60 && v <= 1800) setRecordingAnalysisTimeoutSeconds(v);
-                    else if (e.target.value === "") setRecordingAnalysisTimeoutSeconds(60);
+                    setRecordingAnalysisTimeoutSeconds(Number.isNaN(v) ? 300 : Math.min(1800, Math.max(60, v)));
                   }}
                 />
                 <div className="text-[12px] text-dim/60">范围 60 – 1800，默认 300</div>
