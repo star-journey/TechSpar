@@ -1,5 +1,10 @@
 """Per-user LLM and embedding providers."""
 
+import logging
+import time
+
+import httpx
+import openai
 from langchain_openai import ChatOpenAI
 
 from backend.config import (
@@ -13,6 +18,8 @@ from backend.config import (
 )
 from backend.storage.user_settings import load_user_provider
 from backend.user_context import get_current_user_id
+
+logger = logging.getLogger("uvicorn")
 
 _embedding_cache: dict[str, tuple[str, object]] = {}
 
@@ -94,7 +101,7 @@ def _require_llm(c: dict):
         raise ProviderNotConfigured("LLM")
 
 
-def get_langchain_llm(user_id: str | None = None):
+def get_langchain_llm(user_id: str | None = None, *, streaming: bool = True):
     c = resolve_llm_config(user_id)
     _require_llm(c)
     return ChatOpenAI(
@@ -102,7 +109,7 @@ def get_langchain_llm(user_id: str | None = None):
         api_key=c["api_key"],
         base_url=c["api_base"],
         temperature=c["temperature"],
-        streaming=True,
+        streaming=streaming,
     )
 
 
@@ -123,6 +130,48 @@ def get_copilot_llm(user_id: str | None = None, streaming: bool = False):
         temperature=_COPILOT_TEMPERATURE,
         streaming=streaming,
     )
+
+
+# Transient transport failures worth retrying. Mid-response HTTP/2 resets
+# ("INTERNAL_ERROR; received from peer") and dropped connections surface as these;
+# a fresh request usually succeeds. The OpenAI SDK sometimes wraps the underlying
+# httpx error, so we also match on the message as a fallback.
+_RETRYABLE_LLM_ERRORS = (
+    openai.APIConnectionError,
+    openai.APITimeoutError,
+    openai.InternalServerError,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.ProtocolError,
+)
+_RETRYABLE_MESSAGE_FRAGMENTS = ("INTERNAL_ERROR", "stream error", "received from peer")
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    if isinstance(exc, _RETRYABLE_LLM_ERRORS):
+        return True
+    message = str(exc)
+    return any(fragment in message for fragment in _RETRYABLE_MESSAGE_FRAGMENTS)
+
+
+def invoke_with_retry(llm, messages, *, attempts: int = 3, base_delay: float = 2.0):
+    """Invoke an LLM, retrying transient stream/connection failures with backoff.
+
+    Batch-JSON calls (e.g. recording analysis) can be reset mid-response by the
+    provider/gateway (HTTP/2 INTERNAL_ERROR). Such failures are usually transient,
+    so retry the whole call rather than failing the task. Non-transient errors
+    (bad request, auth, parse) propagate immediately.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return llm.invoke(messages)
+        except Exception as exc:
+            if not _is_retryable_llm_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "LLM invoke transient failure (attempt %d/%d): %s", attempt, attempts, exc
+            )
+            time.sleep(base_delay * attempt)
 
 
 # ── Embedding ──

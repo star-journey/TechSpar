@@ -12,7 +12,14 @@ from backend.memory import extract_behavior_ops, llm_update_profile
 from backend.models import RecordingAnalyzeRequest
 from backend.review_formatters import format_drill_review, format_solo_review
 from backend.runtime import _task_status
-from backend.storage.sessions import create_session, save_drill_answers, save_review
+from backend.storage.sessions import (
+    STATUS_REVIEW_FAILED,
+    STATUS_REVIEWING,
+    create_session,
+    save_drill_answers,
+    save_review,
+    update_session_status,
+)
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter(prefix="/api")
@@ -52,7 +59,7 @@ def _analyze_recording_background(
     """Background task: analyze recording transcript."""
     try:
         from backend.graphs.topic_drill import _parse_json_response
-        from backend.llm_provider import get_langchain_llm
+        from backend.llm_provider import get_langchain_llm, invoke_with_retry
         from backend.memory import get_profile_summary
         from backend.prompts.recording import (
             RECORDING_DUAL_EVAL_PROMPT,
@@ -60,12 +67,12 @@ def _analyze_recording_background(
             RECORDING_STRUCTURE_PROMPT,
         )
 
-        llm = get_langchain_llm(user_id)
+        llm = get_langchain_llm(user_id, streaming=False)
         profile_summary = get_profile_summary(user_id)
 
         if req_recording_mode == "dual":
             structure_prompt = RECORDING_STRUCTURE_PROMPT.format(transcript=req_transcript)
-            response = llm.invoke([
+            response = invoke_with_retry(llm, [
                 SystemMessage(content="你是面试记录分析引擎。只返回 JSON，不要其他内容。"),
                 HumanMessage(content=structure_prompt),
             ])
@@ -91,7 +98,7 @@ def _analyze_recording_background(
                 qa_pairs="\n\n".join(qa_lines),
                 profile_summary=profile_summary,
             )
-            eval_response = llm.invoke([
+            eval_response = invoke_with_retry(llm, [
                 SystemMessage(content="你是面试评估引擎。只返回 JSON，不要其他内容。"),
                 HumanMessage(content=eval_prompt),
             ])
@@ -116,7 +123,7 @@ def _analyze_recording_background(
                 transcript=req_transcript,
                 profile_summary=profile_summary,
             )
-            response = llm.invoke([
+            response = invoke_with_retry(llm, [
                 SystemMessage(content="你是录音评估引擎。只返回 JSON，不要其他内容。"),
                 HumanMessage(content=eval_prompt),
             ])
@@ -139,15 +146,22 @@ def _analyze_recording_background(
                 user_id=user_id,
             )
 
-        asyncio.run(_update_recording_profile(
-            overall, scores, max(len(scores), 1), user_id,
-            transcript=req_transcript, session_id=session_id,
-        ))
+        try:
+            asyncio.run(_update_recording_profile(
+                overall, scores, max(len(scores), 1), user_id,
+                transcript=req_transcript, session_id=session_id,
+            ))
+        except Exception:
+            logger.exception("Post-review profile update failed for recording session %s", session_id)
 
-        _task_status[session_id] = {"status": "done", "type": "recording"}
+        _task_status[session_id] = {"status": "done", "type": "recording", "user_id": user_id}
         logger.info("Recording analysis done for session %s", session_id)
     except Exception as exc:
-        _task_status[session_id] = {"status": "error", "type": "recording"}
+        update_session_status(
+            session_id, STATUS_REVIEW_FAILED,
+            user_id=user_id, review_error=str(exc)[:500] or "未知错误",
+        )
+        _task_status[session_id] = {"status": "error", "type": "recording", "user_id": user_id}
         logger.error("Recording analysis failed for session %s: %s", session_id, exc)
 
 
@@ -160,8 +174,9 @@ async def recording_analyze(
     """Analyze a recording transcript — async background processing."""
     session_id = str(uuid.uuid4())
     create_session(session_id, mode="recording", user_id=user_id)
+    update_session_status(session_id, STATUS_REVIEWING, user_id=user_id)
 
-    _task_status[session_id] = {"status": "pending", "type": "recording"}
+    _task_status[session_id] = {"status": "pending", "type": "recording", "user_id": user_id}
     background_tasks.add_task(
         _analyze_recording_background,
         session_id,

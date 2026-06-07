@@ -46,7 +46,12 @@ async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)
         raise HTTPException(404, "Task not found.")
 
     mode = session.get("mode")
-    task_type = "resume_review" if mode == "resume" else "jd_review" if mode == "jd_prep" else "drill_review"
+    task_type = (
+        "resume_review" if mode == "resume"
+        else "jd_review" if mode == "jd_prep"
+        else "recording" if mode == "recording"
+        else "drill_review"
+    )
     status = session.get("status")
     if session.get("review") or status == STATUS_REVIEWED:
         return {"task_id": task_id, "status": "done", "type": task_type}
