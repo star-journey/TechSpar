@@ -737,6 +737,26 @@ def _dispatch_review(
         background_tasks.add_task(_end_jd_prep_background, session_id, questions, answers, preview, meta, user_id)
         return {"session_id": session_id, "mode": mode, "status": "pending"}
 
+    if mode == InterviewMode.RECORDING.value:
+        meta = session.get("meta") or {}
+        transcript = meta.get("transcript")
+        if not transcript:
+            raise HTTPException(400, "会话缺少录音文本，无法重新生成复盘。")
+        from backend.routers.recording import _analyze_recording_background
+
+        update_session_status(session_id, STATUS_REVIEWING, user_id=user_id, clear_error=True)
+        _task_status[session_id] = {"status": "pending", "type": "recording", "user_id": user_id}
+        background_tasks.add_task(
+            _analyze_recording_background,
+            session_id,
+            transcript,
+            meta.get("recording_mode") or "dual",
+            meta.get("company"),
+            meta.get("position"),
+            user_id,
+        )
+        return {"session_id": session_id, "mode": mode, "status": "pending"}
+
     raise HTTPException(400, f"Unsupported mode for review: {mode}")
 
 

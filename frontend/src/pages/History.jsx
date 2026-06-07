@@ -114,11 +114,13 @@ export default function History() {
     setTopicFilter(value);
   };
 
-  // Status dictates where a row click goes. Reviewed → /review. Anything else
-  // routes back into /interview so the user can continue answering or retry review.
+  // Status dictates where a row click goes. Reviewed → /review. Other interview
+  // modes route back into /interview to continue answering or retry. A recording
+  // has no interactive view, so a failed/pending one is managed via the inline
+  // "重新生成" button rather than navigating into an empty interview.
   const openSession = (session) => {
     if (session.status === "reviewed") navigate(`/review/${session.session_id}`);
-    else navigate(`/interview/${session.session_id}`);
+    else if (session.mode !== "recording") navigate(`/interview/${session.session_id}`);
   };
 
   const handleRetryReview = async (event, session) => {
@@ -129,10 +131,14 @@ export default function History() {
       await retryReview(session.session_id);
       const label = session.mode === "resume"
         ? "简历面试复盘生成中"
-        : session.mode === "jd_prep" ? "JD 备面复盘生成中" : "专项训练复盘生成中";
+        : session.mode === "jd_prep" ? "JD 备面复盘生成中"
+        : session.mode === "recording" ? "录音复盘生成中"
+        : "专项训练复盘生成中";
       const type = session.mode === "resume"
         ? "resume_review"
-        : session.mode === "jd_prep" ? "jd_review" : "drill_review";
+        : session.mode === "jd_prep" ? "jd_review"
+        : session.mode === "recording" ? "recording"
+        : "drill_review";
       startTask(session.session_id, type, label);
       // Optimistically reflect the new status so the row updates without a full refetch.
       setSessions((prev) => prev.map((s) =>
@@ -407,7 +413,7 @@ function HistoryRow({ session, onOpen, onDelete, onRetry, retrying }) {
   const createdDate = session.created_at?.slice(0, 10);
   const compactSessionId = formatSessionId(session.session_id);
   const status = session.status || "reviewed";
-  const canRetry = status === "review_failed" && session.mode !== "recording";
+  const canRetry = status === "review_failed";
 
   return (
     <Card

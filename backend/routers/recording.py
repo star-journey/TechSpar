@@ -179,7 +179,19 @@ async def recording_analyze(
 ):
     """Analyze a recording transcript — async background processing."""
     session_id = str(uuid.uuid4())
-    create_session(session_id, mode="recording", user_id=user_id)
+    # Persist the raw inputs so a failed analysis can be regenerated from history
+    # (the retry path re-dispatches the background task from these).
+    create_session(
+        session_id,
+        mode="recording",
+        meta={
+            "transcript": req.transcript,
+            "recording_mode": req.recording_mode,
+            "company": req.company,
+            "position": req.position,
+        },
+        user_id=user_id,
+    )
     update_session_status(session_id, STATUS_REVIEWING, user_id=user_id)
 
     _task_status[session_id] = {"status": "pending", "type": "recording", "user_id": user_id}
