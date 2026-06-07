@@ -66,8 +66,14 @@ def _analyze_recording_background(
             RECORDING_SOLO_EVAL_PROMPT,
             RECORDING_STRUCTURE_PROMPT,
         )
+        from backend.storage.user_settings import load_user_settings
 
-        llm = get_langchain_llm(user_id, streaming=False)
+        # Stream (like topic drill) so the gateway never hits its idle read-timeout on
+        # long batch-JSON generations, and disable the SDK's own retries so the only
+        # retry layer is invoke_with_retry (bounded) — otherwise a 524 fans out into
+        # SDK-retries × invoke_with_retry attempts of 120s calls against the provider.
+        recording_timeout = load_user_settings(user_id).recording_analysis_timeout_seconds
+        llm = get_langchain_llm(user_id, max_retries=0, timeout=recording_timeout)
         profile_summary = get_profile_summary(user_id)
 
         if req_recording_mode == "dual":

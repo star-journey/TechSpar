@@ -16,19 +16,31 @@ export function TaskStatusProvider({ children }) {
     }
   }, []);
 
-  const startTask = useCallback((id, type, label) => {
+  const startTask = useCallback((id, type, label, timeoutMs = 0) => {
     stopPolling(id);
     setTasks((prev) => {
       const filtered = prev.filter((t) => t.id !== id);
       return [...filtered, { id, type, label, status: "pending" }];
     });
 
+    const startedAt = Date.now();
     timersRef.current[id] = setInterval(async () => {
+      if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === id ? { ...t, status: "error", error: "处理超时，请稍后重试" } : t
+          )
+        );
+        stopPolling(id);
+        return;
+      }
       try {
         const data = await getTaskStatus(id);
         if (data.status === "done" || data.status === "error") {
           setTasks((prev) =>
-            prev.map((t) => (t.id === id ? { ...t, status: data.status, result: data.result } : t))
+            prev.map((t) =>
+              t.id === id ? { ...t, status: data.status, result: data.result, error: data.error } : t
+            )
           );
           stopPolling(id);
         }

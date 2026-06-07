@@ -101,15 +101,22 @@ def _require_llm(c: dict):
         raise ProviderNotConfigured("LLM")
 
 
-def get_langchain_llm(user_id: str | None = None, *, streaming: bool = True):
+def get_langchain_llm(user_id: str | None = None, *, streaming: bool = True,
+                      timeout: float | None = None, max_retries: int | None = None):
     c = resolve_llm_config(user_id)
     _require_llm(c)
+    extra: dict = {}
+    if timeout is not None:
+        extra["timeout"] = timeout
+    if max_retries is not None:
+        extra["max_retries"] = max_retries
     return ChatOpenAI(
         model=c["model"],
         api_key=c["api_key"],
         base_url=c["api_base"],
         temperature=c["temperature"],
         streaming=streaming,
+        **extra,
     )
 
 

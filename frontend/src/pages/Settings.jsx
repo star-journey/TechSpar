@@ -122,6 +122,7 @@ export default function Settings() {
   const [numQuestions, setNumQuestions] = useState(10);
   const [divergence, setDivergence] = useState(3);
   const [drillGenerationTimeoutSeconds, setDrillGenerationTimeoutSeconds] = useState(300);
+  const [recordingAnalysisTimeoutSeconds, setRecordingAnalysisTimeoutSeconds] = useState(300);
   const [generateRefOnSubmit, setGenerateRefOnSubmit] = useState(false);
   const [showKey, setShowKey] = useState(false);
 
@@ -236,6 +237,7 @@ export default function Settings() {
         setNumQuestions(data.training.num_questions ?? 10);
         setDivergence(data.training.divergence ?? 3);
         setDrillGenerationTimeoutSeconds(data.training.drill_generation_timeout_seconds ?? 300);
+        setRecordingAnalysisTimeoutSeconds(data.training.recording_analysis_timeout_seconds ?? 300);
         setGenerateRefOnSubmit(Boolean(data.training.generate_reference_answers_on_submit));
         const stt = data.stt || {};
         setSttProvider(stt.provider || "dashscope");
@@ -491,6 +493,7 @@ export default function Settings() {
           num_questions: numQuestions,
           divergence,
           drill_generation_timeout_seconds: drillGenerationTimeoutSeconds,
+          recording_analysis_timeout_seconds: recordingAnalysisTimeoutSeconds,
           generate_reference_answers_on_submit: generateRefOnSubmit,
         },
         stt: {
@@ -1255,6 +1258,23 @@ export default function Settings() {
                     const v = parseInt(e.target.value, 10);
                     if (v >= 60 && v <= 1800) setDrillGenerationTimeoutSeconds(v);
                     else if (e.target.value === "") setDrillGenerationTimeoutSeconds(60);
+                  }}
+                />
+                <div className="text-[12px] text-dim/60">范围 60 – 1800，默认 300</div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className={labelClass}>录音复盘超时（秒）</Label>
+                <Input
+                  className={cn(inputClass, "max-w-[140px]")}
+                  type="number"
+                  min={60}
+                  max={1800}
+                  value={recordingAnalysisTimeoutSeconds}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (v >= 60 && v <= 1800) setRecordingAnalysisTimeoutSeconds(v);
+                    else if (e.target.value === "") setRecordingAnalysisTimeoutSeconds(60);
                   }}
                 />
                 <div className="text-[12px] text-dim/60">范围 60 – 1800，默认 300</div>

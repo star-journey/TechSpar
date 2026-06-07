@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, FileText, Loader2, Upload, User, Users } from "lucide-react";
-import { transcribeRecording, analyzeRecording } from "../api/interview";
+import { transcribeRecording, analyzeRecording, getSettings } from "../api/interview";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -83,6 +83,13 @@ export default function RecordingAnalysis() {
   const [analyzing, setAnalyzing] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState(null);
+  const [recordingAnalysisTimeoutSeconds, setRecordingAnalysisTimeoutSeconds] = useState(300);
+
+  useEffect(() => {
+    getSettings()
+      .then((data) => setRecordingAnalysisTimeoutSeconds(data.training?.recording_analysis_timeout_seconds ?? 300))
+      .catch(() => setRecordingAnalysisTimeoutSeconds(300));
+  }, []);
 
   const currentMode = RECORDING_MODES.find((item) => item.key === recordingMode) || RECORDING_MODES[0];
   const transcriptCount = transcript.trim().length;
@@ -121,7 +128,7 @@ export default function RecordingAnalysis() {
     try {
       const data = await analyzeRecording(transcript, recordingMode, company || null, position || null);
       setSubmitted(true);
-      startTask(data.session_id, "recording", "录音复盘生成中");
+      startTask(data.session_id, "recording", "录音复盘生成中", recordingAnalysisTimeoutSeconds * 1000);
     } catch (err) {
       setError("分析失败: " + err.message);
     } finally {
