@@ -18,7 +18,8 @@ function toTimestamp(value) {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-// 知识轴薄弱点显著性:recency × frequency 衰减,与后端 _weak_point_weight 对齐。
+// 显著性:recency × frequency 衰减,与后端 _weak_point_weight 对齐。
+// 知识轴 weak_points 和表现轴 behavior_signals 字段同构,共用这个权重。
 // 长期不再暴露的点逐渐沉底而非被硬切,纯排序信号。
 const WEAK_POINT_HALF_LIFE_DAYS = 30;
 
@@ -121,12 +122,10 @@ export function buildBehaviorSignals(profile) {
     }
   }
 
+  // 时近衰减排序,与后端 _top_behavior_signals 对齐:旧高频信号不再永远压住新信号
+  const now = Date.now();
   const sortSignals = (list) =>
-    list.sort((a, b) => {
-      const tsDiff = (b.times_seen || 1) - (a.times_seen || 1);
-      if (tsDiff !== 0) return tsDiff;
-      return (b.last_seen || "").localeCompare(a.last_seen || "");
-    });
+    list.sort((a, b) => weakPointWeight(b, now) - weakPointWeight(a, now));
 
   for (const ns of Object.keys(byNamespace)) {
     sortSignals(byNamespace[ns].negative);
@@ -134,17 +133,12 @@ export function buildBehaviorSignals(profile) {
     sortSignals(byNamespace[ns].improved);
   }
 
-  // featured 在所有 namespace 的活跃负向里挑 times_seen 最高的一条
+  // featured 在所有 namespace 的活跃负向里挑显著性最高的一条
   let featured = null;
   for (const ns of Object.keys(byNamespace)) {
     const top = byNamespace[ns].negative[0];
     if (!top) continue;
-    if (
-      !featured ||
-      (top.times_seen || 1) > (featured.times_seen || 1) ||
-      ((top.times_seen || 1) === (featured.times_seen || 1) &&
-        (top.last_seen || "") > (featured.last_seen || ""))
-    ) {
+    if (!featured || weakPointWeight(top, now) > weakPointWeight(featured, now)) {
       featured = top;
     }
   }
@@ -163,6 +157,49 @@ export function buildBehaviorSignals(profile) {
     activePositiveCount,
     improvedCount,
   };
+}
+
+// "自上次访问"delta: 与后端 view_marker 基线对比,全部确定性派生,不依赖 LLM。
+// 返回 null 表示没有基线或没有任何变化(首次访问 / 两次访问之间没训练)。
+export function buildVisitDelta(profile, canonicalTopics) {
+  const marker = profile?.view_marker;
+  const since = toTimestamp(marker?.at);
+  if (!since) return null;
+
+  const weakPoints = profile.weak_points || [];
+  const isActive = (item) => !item.improved && !item.archived && isKnowledgeAxis(item);
+
+  const newWeak = weakPoints.filter(
+    (item) => item.source !== "consolidated" && isActive(item) && toTimestamp(item.first_seen) > since
+  );
+  const newPatterns = weakPoints.filter(
+    (item) => item.source === "consolidated" && isActive(item) && toTimestamp(item.first_seen) > since
+  );
+  const newlyImproved = weakPoints.filter(
+    (item) => item.improved && toTimestamp(item.improved_at) > since
+  );
+
+  const masteryChanges = [];
+  const baseScores = marker.topic_scores || {};
+  for (const [topic, data] of Object.entries(profile.topic_mastery || {})) {
+    if (canonicalTopics && canonicalTopics.size > 0 && !canonicalTopics.has(topic)) continue;
+    const current = getMasteryScore(data);
+    const base = baseScores[topic];
+    if (current == null || typeof base !== "number") continue;
+    const diff = Number((current - base).toFixed(1));
+    if (Math.abs(diff) >= 1) masteryChanges.push({ topic, from: base, to: current, diff });
+  }
+  masteryChanges.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  const sessionsDelta = Math.max(
+    0,
+    (profile.stats?.total_sessions || 0) - (marker.total_sessions || 0)
+  );
+
+  if (!sessionsDelta && !newWeak.length && !newPatterns.length && !newlyImproved.length && !masteryChanges.length) {
+    return null;
+  }
+  return { since: marker.at, sessionsDelta, newWeak, newPatterns, newlyImproved, masteryChanges };
 }
 
 export function getRealTopicSet(profile, history, canonicalTopics) {

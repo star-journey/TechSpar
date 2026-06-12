@@ -5,8 +5,11 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.config import settings
 from backend.llm_provider import get_langchain_llm
-from backend.indexer import retrieve_topic_context, load_topics
-from backend.memory import get_profile_summary, get_profile_summary_for_drill, get_topic_context_for_drill
+from backend.indexer import (
+    retrieve_topic_context, load_topics, get_topic_knowledge,
+    load_topic_documents, KNOWLEDGE_CHAR_BUDGET,
+)
+from backend.memory import get_profile_summary_for_drill, get_topic_context_for_drill
 from backend.prompts.interviewer import (
     DRILL_BATCH_EVAL_PROMPT,
     DRILL_BATCH_EVAL_REF_APPENDIX,
@@ -22,12 +25,20 @@ def _get_topic_display(user_id: str) -> dict[str, str]:
 from backend.utils import parse_json_response as _parse_json_response  # noqa: E402
 
 
+# High-freq is stuffed verbatim into every drill prompt, so cap it. The file keeps
+# everything; only the slice fed to the LLM is bounded (cut at a line boundary).
+HIGH_FREQ_CHAR_BUDGET = 4000
+
+
 def _load_high_freq(topic: str, user_id: str) -> str:
-    """Load high-frequency question bank for a topic."""
+    """Load high-frequency question bank for a topic, capped to the prompt budget."""
     filepath = settings.user_high_freq_path(user_id) / f"{topic}.md"
-    if filepath.exists():
-        return filepath.read_text(encoding="utf-8").strip()
-    return ""
+    if not filepath.exists():
+        return ""
+    text = filepath.read_text(encoding="utf-8").strip()
+    if len(text) > HIGH_FREQ_CHAR_BUDGET:
+        text = text[:HIGH_FREQ_CHAR_BUDGET].rsplit("\n", 1)[0]
+    return text
 
 
 _DIVERGENCE_TO_WEAK_RATIO = {1: 0.8, 2: 0.6, 3: 0.3, 4: 0.15, 5: 0.0}
@@ -59,24 +70,13 @@ def generate_drill_questions(
         if dp not in all_weak:
             all_weak.insert(0, dp)
 
-    # Retrieve knowledge — prioritize weak areas
+    # Knowledge context: stuff the whole corpus when it fits, else RAG-retrieve
+    # prioritizing weak areas.
     queries = []
     if all_weak:
         queries.append(" ".join(all_weak[:5]))
     queries.append(f"{topic_name} 核心知识点 面试常见问题")
-
-    all_chunks = []
-    for q in queries:
-        all_chunks.extend(retrieve_topic_context(topic, q, user_id, top_k=5))
-    # Deduplicate and limit
-    seen = set()
-    unique_chunks = []
-    for c in all_chunks:
-        key = c[:100]
-        if key not in seen:
-            seen.add(key)
-            unique_chunks.append(c)
-    knowledge_ctx = "\n\n---\n\n".join(unique_chunks)[:5000]
+    knowledge_ctx = get_topic_knowledge(topic, queries, user_id)
 
     # Format past insights from vector retrieval
     past_insights_text = "\n".join(
@@ -117,6 +117,23 @@ def generate_drill_questions(
             "当前已熟练（掌握度 60-100），题目策略：\n"
             "- 20% 概念题（考边界 case 和底层原理），80% 场景设计 + 系统权衡题"
         )
+
+    # 趋势调难度: 明显上升时上探一档验证提升是否扎实,明显下滑时降下限巩固基础
+    trend = drill_ctx.get("trend")
+    if trend and abs(trend["delta"]) >= 1.5:
+        n = len(trend["scores"])
+        if trend["direction"] == "up" and diff_max < 5:
+            diff_max += 1
+            question_strategy += (
+                f"\n- 近 {n} 次训练均分从 {trend['first']} 升到 {trend['last']}，进步明显——"
+                "适当上探更高难度，验证提升是否扎实"
+            )
+        elif trend["direction"] == "down" and diff_min > 1:
+            diff_min -= 1
+            question_strategy += (
+                f"\n- 近 {n} 次训练均分从 {trend['first']} 降到 {trend['last']}——"
+                "适当回落难度，先巩固基础再上探"
+            )
 
     weak_ratio = _DIVERGENCE_TO_WEAK_RATIO.get(divergence, 0.3)
     weak_count = round(num_questions * weak_ratio)
@@ -176,21 +193,29 @@ def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict
     answered_questions = [q for q in questions if answer_map.get(q["id"])]
 
     qa_lines = []
-    ref_lines = []
     for q in answered_questions:
         qid = q["id"]
         answer = answer_map[qid]
         qa_lines.append(f"### Q{qid} (难度 {q.get('difficulty', '?')}/5)\n**题目**: {q['question']}\n**回答**: {answer}")
 
-        refs = retrieve_topic_context(topic, q["question"], user_id, top_k=2)
-        if refs:
-            ref_lines.append(f"### Q{qid} 参考\n" + "\n".join(refs)[:2000])
+    # References: stuff the whole corpus when it fits (one shared yardstick, no miss);
+    # otherwise retrieve per-question slices targeted at each answered question.
+    full_core = load_topic_documents(topic, user_id)
+    if 0 < len(full_core) <= KNOWLEDGE_CHAR_BUDGET:
+        references = f"### 该领域参考知识\n{full_core}"
+    else:
+        ref_lines = []
+        for q in answered_questions:
+            refs = retrieve_topic_context(topic, q["question"], user_id, top_k=2)
+            if refs:
+                ref_lines.append(f"### Q{q['id']} 参考\n" + "\n".join(refs)[:2000])
+        references = "\n\n".join(ref_lines)[:KNOWLEDGE_CHAR_BUDGET]
 
     prompt = DRILL_BATCH_EVAL_PROMPT.format(
         topic_name=topic_name,
         topic_key=topic,
         qa_pairs="\n\n".join(qa_lines),
-        references="\n\n".join(ref_lines)[:8000],
+        references=references,
     )
     if include_reference_answer:
         prompt += DRILL_BATCH_EVAL_REF_APPENDIX

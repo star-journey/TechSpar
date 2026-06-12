@@ -610,10 +610,15 @@ def _end_drill_background(session_id, topic, questions, answers, user_id):
                 if weak_point and isinstance(score_value, (int, float)):
                     update_weak_point_sr(topic, weak_point, score_value, user_id)
 
+            # 自评 vs 实评的确定性元认知校准(答案里带 confidence 时才会产出 ops)
+            from backend.memory import build_calibration_ops
+            calibration_ops = build_calibration_ops(questions, answers, scores)
+
             asyncio.run(_update_drill_profile(
                 session_id, topic, overall, scores, len(questions), user_id,
                 weak_points=merged_weak_points,
                 transcript=_qa_transcript(questions, answers),
+                extra_behavior_ops=calibration_ops,
             ))
         except Exception:
             logger.exception("Post-review updates failed for drill session %s", session_id)
@@ -879,6 +884,7 @@ async def _update_drill_profile(
     user_id: str,
     weak_points: list[dict] | None = None,
     transcript: str = "",
+    extra_behavior_ops: list | None = None,
 ):
     """Update profile from drill evaluation — Mem0-style LLM update."""
     valid = []
@@ -900,6 +906,7 @@ async def _update_drill_profile(
     mastery.pop("level", None)
 
     behavior_ops = await extract_behavior_ops(transcript, user_id, mode="topic_drill", topic=topic)
+    behavior_ops = behavior_ops + (extra_behavior_ops or [])
 
     await llm_update_profile(
         mode="topic_drill",

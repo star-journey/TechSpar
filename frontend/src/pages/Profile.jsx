@@ -7,11 +7,12 @@ import {
   ChevronRight,
   Clock3,
   FileText,
+  Sparkles,
   Target,
   TrendingUp,
 } from "lucide-react";
 
-import { getProfile, getTopics } from "../api/interview";
+import { getProfile, getTopics, markProfileViewed } from "../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import {
   buildModeCounts,
   buildPriorityWeaknesses,
   buildTrainingModeStats,
+  buildVisitDelta,
   formatMinute,
   formatShortDate,
   getLatestEntry,
@@ -60,6 +62,13 @@ export default function Profile() {
       .then(([nextProfile, topics]) => {
         setProfile(nextProfile);
         setCanonicalTopics(new Set(Object.keys(topics || {})));
+        // 重置"自上次访问"基线。基线 30 分钟内不重置,短时间刷新/跳转回来时 delta 保持可见
+        const hasAnyData = (nextProfile?.stats?.total_sessions || 0) > 0
+          || (nextProfile?.weak_points || []).length > 0;
+        const markerAt = Date.parse(nextProfile?.view_marker?.at || "") || 0;
+        if (hasAnyData && (!markerAt || Date.now() - markerAt > 30 * 60 * 1000)) {
+          markProfileViewed().catch(() => {});
+        }
       })
       .finally(() => setLoading(false));
   }, []);
@@ -128,7 +137,10 @@ export default function Profile() {
 
             <div className="mt-7 text-xs font-medium text-dim">选一个方式开始第一场面试</div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
-              {startOptions.map(({ path, icon: Icon, title, desc, hint }) => (
+              {startOptions.map((option) => {
+                // eslint 没配 jsx-uses-vars,解构参数会被误报 unused;局部变量走 varsIgnorePattern
+                const { path, icon: Icon, title, desc, hint } = option;
+                return (
                 <button
                   key={path}
                   onClick={() => navigate(path)}
@@ -146,7 +158,8 @@ export default function Profile() {
                   </div>
                   <div className="text-[11px] font-medium text-primary/80">{hint}</div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
@@ -205,6 +218,7 @@ export default function Profile() {
   const trainingModeStats = buildTrainingModeStats(stats, scoreHistory);
   const latestEntry = getLatestEntry(scoreHistory);
   const trendDelta = getTrendDelta(scoreHistory);
+  const visitDelta = buildVisitDelta(profile, canonicalTopics);
 
   return (
     <div className={PAGE_CLASS}>
@@ -216,6 +230,61 @@ export default function Profile() {
           {profile.updated_at ? ` | 上次更新 ${formatMinute(profile.updated_at)}` : ""}
         </div>
       </div>
+
+      {visitDelta && (
+        <Card className="mt-5 animate-fade-in-up [animation-delay:0.02s] border-primary/25 bg-[linear-gradient(135deg,rgba(245,158,11,0.05),transparent)]">
+          <CardContent className="p-4 md:p-5">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Sparkles size={16} className="text-primary" />
+              自上次访问（{formatShortDate(visitDelta.since)}）的变化
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {visitDelta.sessionsDelta > 0 && (
+                <Badge variant="outline" className="rounded-full px-2.5 py-1 text-xs font-normal">
+                  +{visitDelta.sessionsDelta} 次训练
+                </Badge>
+              )}
+              {visitDelta.masteryChanges.slice(0, 4).map((change) => (
+                <Badge
+                  key={change.topic}
+                  variant="outline"
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-normal",
+                    change.diff > 0 ? "border-green/40 text-green" : "border-red/40 text-red"
+                  )}
+                >
+                  {change.topic} {change.from} → {change.to}
+                </Badge>
+              ))}
+              {visitDelta.newWeak.length > 0 && (
+                <Badge variant="outline" className="rounded-full border-red/40 px-2.5 py-1 text-xs font-normal text-red">
+                  +{visitDelta.newWeak.length} 个新薄弱点
+                </Badge>
+              )}
+              {visitDelta.newlyImproved.length > 0 && (
+                <Badge variant="outline" className="rounded-full border-green/40 px-2.5 py-1 text-xs font-normal text-green">
+                  {visitDelta.newlyImproved.length} 条已改善
+                </Badge>
+              )}
+            </div>
+
+            {visitDelta.newPatterns.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {visitDelta.newPatterns.map((pattern) => (
+                  <div key={pattern.point} className="flex items-start gap-2 rounded-xl border border-accent/25 bg-accent/5 px-3 py-2 text-sm leading-6">
+                    <span className="shrink-0 text-accent">✦</span>
+                    <span>
+                      系统发现了一条关于你的新规律：{pattern.point}
+                      <span className="ml-1 text-xs text-dim">（可在下方知识证据区确认准不准）</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="mt-5 animate-fade-in-up [animation-delay:0.04s]">
         <CardContent className="p-4 md:p-5">

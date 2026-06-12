@@ -3,6 +3,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
+import { sendPatternFeedback } from "../../api/interview";
 import { formatShortDate } from "./derive";
 import { EVIDENCE_TYPE_ALL, EVIDENCE_TYPES } from "./meta";
 
@@ -10,7 +11,22 @@ export default function EvidenceTable({ weakItems, strongItems, improvedItems })
   const [typeFilter, setTypeFilter] = useState(EVIDENCE_TYPE_ALL);
   const [topicFilter, setTopicFilter] = useState(EVIDENCE_TYPE_ALL);
   const [expanded, setExpanded] = useState(false);
+  // 用户对 consolidated 规律的反馈,乐观更新,失败回滚
+  const [patternFeedback, setPatternFeedback] = useState({});
   const LIMIT = 8;
+
+  const handlePatternFeedback = async (point, verdict) => {
+    setPatternFeedback((prev) => ({ ...prev, [point]: verdict }));
+    try {
+      await sendPatternFeedback(point, verdict);
+    } catch {
+      setPatternFeedback((prev) => {
+        const next = { ...prev };
+        delete next[point];
+        return next;
+      });
+    }
+  };
 
   const allItems = [
     ...weakItems.map((item) => ({ ...item, _type: "weak" })),
@@ -145,6 +161,32 @@ export default function EvidenceTable({ weakItems, strongItems, improvedItems })
                         · {source}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {isConsolidated && item._type === "weak" && (
+                  <div className="mt-2 ml-5 flex items-center gap-2">
+                    {patternFeedback[item.point] === "inaccurate" ? (
+                      <span className="text-[11px] text-dim/70">已标记不准，这条规律不再展示</span>
+                    ) : patternFeedback[item.point] === "accurate" || item.user_acknowledged ? (
+                      <span className="text-[11px] text-dim/70">✓ 已确认</span>
+                    ) : (
+                      <>
+                        <span className="text-[11px] text-dim/60">这条规律准吗？</span>
+                        <button
+                          onClick={() => handlePatternFeedback(item.point, "accurate")}
+                          className="rounded-full border border-border px-2.5 py-0.5 text-[11px] text-dim transition-colors cursor-pointer hover:border-green/40 hover:text-green"
+                        >
+                          准
+                        </button>
+                        <button
+                          onClick={() => handlePatternFeedback(item.point, "inaccurate")}
+                          className="rounded-full border border-border px-2.5 py-0.5 text-[11px] text-dim transition-colors cursor-pointer hover:border-red/40 hover:text-red"
+                        >
+                          不准
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

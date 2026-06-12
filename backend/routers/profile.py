@@ -52,6 +52,29 @@ def infer_target_role(user_id: str = Depends(get_current_user)):
     return {"target_role": role}
 
 
+@router.post("/profile/viewed")
+async def profile_viewed(user_id: str = Depends(get_current_user)):
+    """Reset the visit baseline used by the profile page's since-last-visit delta."""
+    from backend.memory import mark_profile_viewed
+
+    return await mark_profile_viewed(user_id)
+
+
+@router.post("/profile/pattern/feedback")
+async def pattern_feedback(body: dict, user_id: str = Depends(get_current_user)):
+    """User feedback on a consolidated pattern: accurate / inaccurate / acknowledged."""
+    from backend.memory import apply_pattern_feedback
+
+    point = (body.get("point") or "").strip()
+    verdict = body.get("verdict")
+    if not point or verdict not in ("accurate", "inaccurate", "acknowledged"):
+        raise HTTPException(400, "需要 point 和 verdict (accurate|inaccurate|acknowledged)")
+    updated = await apply_pattern_feedback(user_id, point, verdict)
+    if updated is None:
+        raise HTTPException(404, "未找到该规律")
+    return updated
+
+
 @router.get("/profile/due-reviews")
 def get_due_reviews_endpoint(topic: str = None, user_id: str = Depends(get_current_user)):
     """Get weak points due for spaced repetition review."""

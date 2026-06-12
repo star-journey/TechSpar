@@ -448,6 +448,30 @@ def list_sessions_by_topic(topic: str, *, user_id: str, limit: int = 50) -> list
     return results
 
 
+def list_recent_questions(topic: str, *, user_id: str, session_limit: int = 5,
+                          max_questions: int = 20) -> list[str]:
+    """Question texts from the most recent sessions of a topic, oldest session first.
+
+    Drill anti-repeat context. Includes non-reviewed sessions too: the user saw
+    those questions even if the session was abandoned.
+    """
+    conn = _get_conn()
+    # rowid 决胜: created_at 秒级粒度,同秒创建的 session 排序不稳定
+    rows = conn.execute(
+        "SELECT questions FROM sessions WHERE topic = ? AND user_id = ? "
+        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (topic, user_id, session_limit),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in reversed(rows):
+        for q in json.loads(r["questions"] or "[]"):
+            text = q.get("question") if isinstance(q, dict) else None
+            if text:
+                out.append(text)
+    return out[-max_questions:]
+
+
 def list_sessions(
     *, user_id: str,
     limit: int = 20,

@@ -34,6 +34,11 @@ CHUNK_SIZE = 1000       # chars per chunk (CJK-friendly; ~数百 token)
 CHUNK_OVERLAP = 150     # char overlap carried between adjacent chunks
 TOPIC_EXTS = {".md", ".txt", ".py"}
 
+# Curated topic knowledge is usually small. Below this size we stuff the whole
+# corpus into the prompt verbatim (no retrieval miss); only larger corpora fall
+# back to RAG. Doubles as the cap on retrieved context.
+KNOWLEDGE_CHAR_BUDGET = 8000
+
 
 # ── Topics registry (topics.json) — not vector-related ──
 
@@ -262,6 +267,51 @@ def retrieve_topic_context(topic: str, question: str, user_id: str, top_k: int =
         ingest_topic(topic, user_id)
         chunks = _retrieve(user_id, TOPIC_CHUNK, topic, question, top_k)
     return chunks
+
+
+def load_topic_documents(topic: str, user_id: str) -> str:
+    """Concatenate a topic's knowledge files verbatim — the source of truth, no chunking."""
+    topic_map = get_topic_map(user_id)
+    if topic not in topic_map:
+        return ""
+    topic_dir = settings.user_knowledge_path(user_id) / topic_map[topic]
+    if not topic_dir.exists():
+        return ""
+    parts: list[str] = []
+    for path in sorted(topic_dir.rglob("*")):
+        if path.is_file() and path.suffix.lower() in TOPIC_EXTS:
+            text = _read_text(path).strip()
+            if text:
+                parts.append(text)
+    return "\n\n---\n\n".join(parts)
+
+
+def get_topic_knowledge(
+    topic: str,
+    queries: list[str],
+    user_id: str,
+    *,
+    top_k: int = 5,
+    char_budget: int = KNOWLEDGE_CHAR_BUDGET,
+) -> str:
+    """Size-gated knowledge context for a topic.
+
+    When the whole curated corpus fits in `char_budget`, return it verbatim — it is
+    small and every part matters, so retrieval only risks dropping relevant content.
+    Only larger corpora fall back to top-k RAG retrieval over `queries`."""
+    full = load_topic_documents(topic, user_id)
+    if len(full) <= char_budget:
+        return full
+
+    seen: set[str] = set()
+    chunks: list[str] = []
+    for q in queries:
+        for c in retrieve_topic_context(topic, q, user_id, top_k=top_k):
+            key = c[:100]
+            if key not in seen:
+                seen.add(key)
+                chunks.append(c)
+    return "\n\n---\n\n".join(chunks)[:char_budget]
 
 
 # ── Invalidation ──

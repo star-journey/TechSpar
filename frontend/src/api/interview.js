@@ -289,6 +289,22 @@ export async function getProfile() {
   return res.json();
 }
 
+export async function markProfileViewed() {
+  const res = await authFetch(`${API_BASE}/profile/viewed`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function sendPatternFeedback(point, verdict) {
+  const res = await authFetch(`${API_BASE}/profile/pattern/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ point, verdict }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function getTopicRetrospective(topic) {
   const res = await authFetch(`${API_BASE}/profile/topic/${topic}/retrospective`, {
     method: "POST",

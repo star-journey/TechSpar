@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 import { Menu, X, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { getTopicIcon, ICON_OPTIONS } from "../utils/topicIcons";
 import {
@@ -22,10 +23,12 @@ export default function Knowledge() {
   const [expandedFile, setExpandedFile] = useState(null);
   const [editContent, setEditContent] = useState({});
   const [coreSaving, setCoreSaving] = useState(null);
+  const [coreEditing, setCoreEditing] = useState(null);
 
   const [highFreq, setHighFreq] = useState("");
   const [highFreqDraft, setHighFreqDraft] = useState("");
   const [hfSaving, setHfSaving] = useState(false);
+  const [hfEditing, setHfEditing] = useState(false);
 
   const [newFileName, setNewFileName] = useState("");
   const [showNewFile, setShowNewFile] = useState(false);
@@ -52,7 +55,8 @@ export default function Knowledge() {
     try {
       const files = await getCoreKnowledge(topic);
       setCoreFiles(files);
-      setExpandedFile(null);
+      setExpandedFile(files[0]?.filename ?? null);
+      setCoreEditing(null);
       const buf = {};
       files.forEach((f) => { buf[f.filename] = f.content; });
       setEditContent(buf);
@@ -64,7 +68,8 @@ export default function Knowledge() {
       const data = await getHighFreq(topic);
       setHighFreq(data.content || "");
       setHighFreqDraft(data.content || "");
-    } catch { setHighFreq(""); setHighFreqDraft(""); }
+      setHfEditing(false);
+    } catch { setHighFreq(""); setHighFreqDraft(""); setHfEditing(false); }
   }, []);
 
   useEffect(() => {
@@ -78,6 +83,7 @@ export default function Knowledge() {
     try {
       await updateCoreKnowledge(selected, filename, editContent[filename] || "");
       setCoreFiles((prev) => prev.map((f) => f.filename === filename ? { ...f, content: editContent[filename] } : f));
+      setCoreEditing(null);
     } catch (e) { alert("保存失败: " + e.message); }
     setTimeout(() => setCoreSaving(null), 1500);
   };
@@ -87,6 +93,7 @@ export default function Knowledge() {
     try {
       await updateHighFreq(selected, highFreqDraft);
       setHighFreq(highFreqDraft);
+      setHfEditing(false);
     } catch (e) { alert("保存失败: " + e.message); }
     setTimeout(() => setHfSaving(false), 1500);
   };
@@ -283,7 +290,7 @@ export default function Knowledge() {
                     <Card key={f.filename} className="overflow-hidden">
                       <div
                         className="flex justify-between items-center px-4 py-3 cursor-pointer text-sm font-medium hover:bg-hover/50 transition-colors"
-                        onClick={() => setExpandedFile(expandedFile === f.filename ? null : f.filename)}
+                        onClick={() => { setExpandedFile(expandedFile === f.filename ? null : f.filename); setCoreEditing(null); }}
                       >
                         <span>{f.filename}</span>
                         <div className="flex items-center gap-2">
@@ -297,15 +304,34 @@ export default function Knowledge() {
                       </div>
                       {expandedFile === f.filename && (
                         <div className="border-t border-border p-4 animate-fade-in">
-                          <textarea
-                            className="w-full min-h-[300px] p-3 rounded-lg border border-border bg-bg text-text text-[13px] font-mono leading-relaxed resize-y focus:outline-none focus:border-primary"
-                            value={editContent[f.filename] ?? f.content}
-                            onChange={(e) => setEditContent((prev) => ({ ...prev, [f.filename]: e.target.value }))}
-                          />
-                          <div className="flex gap-2 mt-3 justify-end">
-                            {coreSaving === f.filename && <span className="text-xs text-green self-center mr-3">已保存</span>}
-                            <Button variant="gradient" size="sm" onClick={() => handleSaveCore(f.filename)}>保存</Button>
-                          </div>
+                          {coreEditing === f.filename ? (
+                            <>
+                              <textarea
+                                className="w-full min-h-[300px] p-3 rounded-lg border border-border bg-bg text-text text-[13px] font-mono leading-relaxed resize-y focus:outline-none focus:border-primary"
+                                value={editContent[f.filename] ?? f.content}
+                                onChange={(e) => setEditContent((prev) => ({ ...prev, [f.filename]: e.target.value }))}
+                                autoFocus
+                              />
+                              <div className="flex gap-2 mt-3 justify-end">
+                                <Button variant="outline" size="sm" onClick={() => { setEditContent((prev) => ({ ...prev, [f.filename]: f.content })); setCoreEditing(null); }}>取消</Button>
+                                <Button variant="gradient" size="sm" onClick={() => handleSaveCore(f.filename)}>保存</Button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              {(editContent[f.filename] ?? f.content)?.trim() ? (
+                                <div className="md-content text-sm leading-6 text-text">
+                                  <ReactMarkdown>{editContent[f.filename] ?? f.content}</ReactMarkdown>
+                                </div>
+                              ) : (
+                                <div className="text-dim text-sm py-6 text-center">空文件，点「编辑」添加内容</div>
+                              )}
+                              <div className="flex gap-2 mt-3 justify-end items-center">
+                                {coreSaving === f.filename && <span className="text-xs text-green mr-1">已保存</span>}
+                                <Button variant="outline" size="sm" onClick={() => setCoreEditing(f.filename)}>编辑</Button>
+                              </div>
+                            </>
+                          )}
                         </div>
                       )}
                     </Card>
@@ -316,21 +342,41 @@ export default function Knowledge() {
           ) : (
             <div>
               <div className="text-[13px] text-dim mb-3">
-                标记的高频面试考点，出题时会优先覆盖。支持 Markdown 格式。
+                标记的高频面试考点，出题时会优先覆盖。建议一行一题，或一个「##」标题一题，方便出题精准覆盖。
               </div>
-              <textarea
-                className="w-full min-h-[500px] p-3 rounded-xl border border-border bg-bg text-text text-[13px] font-mono leading-relaxed resize-y focus:outline-none focus:border-primary"
-                value={highFreqDraft}
-                onChange={(e) => setHighFreqDraft(e.target.value)}
-                placeholder={"# 高频题\n\n## 1. xxx原理是什么？为什么这样设计？\n\n## 2. 实际项目中遇到xxx问题怎么解决？"}
-              />
-              <div className="flex gap-2 mt-3 justify-end">
-                {hfSaving && <span className="text-xs text-green self-center mr-3">已保存</span>}
-                {highFreqDraft !== highFreq && (
-                  <Button variant="outline" size="sm" onClick={() => setHighFreqDraft(highFreq)}>撤销修改</Button>
-                )}
-                <Button variant="gradient" size="sm" onClick={handleSaveHighFreq} disabled={highFreqDraft === highFreq}>保存</Button>
-              </div>
+              {hfEditing ? (
+                <>
+                  <textarea
+                    className="w-full min-h-[500px] p-3 rounded-xl border border-border bg-bg text-text text-[13px] font-mono leading-relaxed resize-y focus:outline-none focus:border-primary"
+                    value={highFreqDraft}
+                    onChange={(e) => setHighFreqDraft(e.target.value)}
+                    placeholder={"# 高频题\n\n## 1. xxx原理是什么？为什么这样设计？\n\n## 2. 实际项目中遇到xxx问题怎么解决？"}
+                    autoFocus
+                  />
+                  <div className="flex gap-2 mt-3 justify-end">
+                    {hfSaving && <span className="text-xs text-green self-center mr-3">已保存</span>}
+                    {highFreqDraft !== highFreq && (
+                      <Button variant="outline" size="sm" onClick={() => setHighFreqDraft(highFreq)}>撤销修改</Button>
+                    )}
+                    <Button variant="outline" size="sm" onClick={() => { setHighFreqDraft(highFreq); setHfEditing(false); }}>取消</Button>
+                    <Button variant="gradient" size="sm" onClick={handleSaveHighFreq} disabled={highFreqDraft === highFreq}>保存</Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {highFreq.trim() ? (
+                    <div className="md-content text-sm leading-6 text-text rounded-xl border border-border bg-bg p-4">
+                      <ReactMarkdown>{highFreq}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="text-dim text-sm py-10 text-center rounded-xl border border-border bg-bg">暂无高频题，点「编辑」添加</div>
+                  )}
+                  <div className="flex gap-2 mt-3 justify-end items-center">
+                    {hfSaving && <span className="text-xs text-green mr-1">已保存</span>}
+                    <Button variant="outline" size="sm" onClick={() => setHfEditing(true)}>编辑</Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

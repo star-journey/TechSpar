@@ -68,7 +68,10 @@ def get_due_reviews(user_id: str, topic: str = None) -> list[dict]:
     due = []
 
     for wp in profile.get("weak_points", []):
-        if wp.get("improved"):
+        if wp.get("improved") or wp.get("archived"):
+            continue
+        # 跨领域规律不是可复习的知识点;老数据的表现轴条目同样排除
+        if wp.get("source") == "consolidated" or wp.get("axis") == "performance":
             continue
         if topic and wp.get("topic") != topic:
             continue
@@ -94,7 +97,8 @@ def update_weak_point_sr(topic: str, point_text: str, score: float, user_id: str
     # Filter candidates by topic
     candidates = [
         (i, wp) for i, wp in enumerate(profile.get("weak_points", []))
-        if not wp.get("improved") and (not topic or wp.get("topic") == topic)
+        if not wp.get("improved") and not wp.get("archived")
+        and (not topic or wp.get("topic") == topic)
     ]
     if not candidates:
         return False
@@ -120,7 +124,9 @@ def init_sr_for_existing_points(user_id: str):
     changed = False
 
     for wp in profile.get("weak_points", []):
-        if wp.get("improved"):
+        if wp.get("improved") or wp.get("archived"):
+            continue
+        if wp.get("source") == "consolidated" or wp.get("axis") == "performance":
             continue
         if "sr" not in wp:
             wp["sr"] = {

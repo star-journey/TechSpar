@@ -6,6 +6,7 @@
 - 向量召回（embedding）：语义搜索历史洞察
 """
 import asyncio
+import copy
 import json
 import logging
 import math
@@ -14,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.config import settings
 from backend.llm_provider import get_langchain_llm
@@ -252,7 +253,8 @@ def _load_profile(user_id: str) -> dict:
     path = _profile_path(user_id)
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    return DEFAULT_PROFILE.copy()
+    # deepcopy: 浅拷贝会让所有新用户共享嵌套 list/dict，写入互相污染
+    return copy.deepcopy(DEFAULT_PROFILE)
 
 
 def _save_profile(profile: dict, user_id: str):
@@ -295,6 +297,27 @@ def get_profile(user_id: str) -> dict:
     return _load_profile(user_id)
 
 
+async def mark_profile_viewed(user_id: str) -> dict:
+    """记录画像页访问基线快照，前端据此派生"自上次访问"的 delta 视图。
+
+    快照存 total_sessions 和各 topic 当时的掌握度，使 mastery 变化可以精确计算
+    （score_history 只有 session 均分，推不出掌握度差值）。
+    """
+    async with _get_profile_lock(user_id):
+        profile = _load_profile(user_id)
+        marker = {
+            "at": datetime.now().isoformat(),
+            "total_sessions": profile.get("stats", {}).get("total_sessions", 0),
+            "topic_scores": {
+                t: v.get("score", v.get("level", 0) * 20)
+                for t, v in profile.get("topic_mastery", {}).items()
+            },
+        }
+        profile["view_marker"] = marker
+        _save_profile(profile, user_id)
+        return marker
+
+
 async def update_target_role(user_id: str, target_role: str) -> None:
     """Persist target_role as the sticky default for future sessions."""
     target_role = (target_role or "").strip()
@@ -327,9 +350,31 @@ def _weak_point_weight(wp: dict, now: datetime) -> float:
     return recency * freq_mult
 
 
+def get_topic_score_trend(profile: dict, topic: str, window: int = 5) -> dict | None:
+    """近 N 次该领域训练的均分趋势，从 score_history 派生，零额外存储。
+
+    至少 2 次有分记录才有趋势。direction 阈值 ±0.5 分，避免噪声当趋势。
+    """
+    scores = [
+        h["avg_score"] for h in profile.get("stats", {}).get("score_history", [])
+        if h.get("topic") == topic and isinstance(h.get("avg_score"), (int, float))
+    ][-window:]
+    if len(scores) < 2:
+        return None
+    delta = round(scores[-1] - scores[0], 1)
+    direction = "up" if delta >= 0.5 else "down" if delta <= -0.5 else "flat"
+    return {
+        "scores": scores,
+        "first": scores[0],
+        "last": scores[-1],
+        "delta": delta,
+        "direction": direction,
+    }
+
+
 def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     """Get personalized context for drill question generation."""
-    from backend.storage.sessions import list_recent_drill_questions, list_sessions_by_topic
+    from backend.storage.sessions import list_recent_questions, list_sessions_by_topic
 
     profile = _load_profile(user_id)
 
@@ -337,6 +382,13 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     mastery_score = mastery.get("score", mastery.get("level", 0) * 20)
     mastery_notes = mastery.get("notes", "新领域，暂无历史数据" if mastery_score == 0 else "")
     mastery_info = f"{mastery_score}/100 — {mastery_notes}"
+
+    trend = get_topic_score_trend(profile, topic)
+    if trend:
+        arrow = {"up": "↗", "down": "↘", "flat": "→"}[trend["direction"]]
+        mastery_info += (
+            f"；近 {len(trend['scores'])} 次训练均分 {trend['first']} → {trend['last']} {arrow}"
+        )
 
     # Weak points for this topic (knowledge only — legacy axis=performance excluded),
     # seeded from the profile most-salient-first via recency×frequency decay, then
@@ -393,13 +445,9 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
         if len(topic_weak) >= 15:
             break
 
-    recent_questions = list_recent_drill_questions(topic, user_id=user_id, limit=20)
-    if not recent_questions:
-        recent_questions = [
-            h.get("question", "")
-            for h in profile.get("stats", {}).get("score_history", [])
-            if h.get("topic") == topic and h.get("question")
-        ][-20:]
+    # Recent questions asked in this topic — anti-repeat context for generation.
+    # score_history 从不存题目文本,必须从 sessions 存储读,否则永远为空。
+    recent_questions = list_recent_questions(topic, user_id=user_id)
 
     past_insights = []
     try:
@@ -428,6 +476,7 @@ def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     return {
         "mastery_info": mastery_info,
         "mastery_score": mastery_score,
+        "trend": trend,
         "weak_points": topic_weak[:15],
         "recent_questions": recent_questions,
         "past_insights": past_insights,
@@ -444,8 +493,28 @@ def _active_knowledge_weak_points(profile: dict) -> list[dict]:
     ]
 
 
+def _top_consolidated_patterns(profile: dict, limit: int = 3) -> list[str]:
+    """Active consolidated cross-domain patterns, highest confidence first.
+
+    Stage 3 产出的规律 source="consolidated"，不在 observed/predicted 两个过滤里，
+    必须显式取出注入 prompt，否则只写不读。
+    """
+    patterns = [
+        w for w in profile.get("weak_points", [])
+        if w.get("source") == "consolidated" and not w.get("improved") and not w.get("archived")
+    ]
+    patterns.sort(
+        key=lambda w: (w.get("confidence", 0.7), w.get("last_seen", "")),
+        reverse=True,
+    )
+    return [w["point"] for w in patterns[:limit]]
+
+
 def _top_behavior_signals(profile: dict, polarity: str | None = None, limit: int = 6) -> list[tuple[str, dict]]:
     """Top behavior_signals sorted by recency × times_seen.
+
+    复用 _weak_point_weight 的半衰期权重（字段同构: last_seen/first_seen/times_seen）。
+    纯按 times_seen 排会让几个月前的旧高频信号永远压住最近的新信号。
 
     polarity=None returns all (active negatives + improved positives).
     polarity="negative" returns active negative signals only.
@@ -459,11 +528,8 @@ def _top_behavior_signals(profile: dict, polarity: str | None = None, limit: int
             continue
         items.append((sid, data))
 
-    def _sort_key(pair):
-        _, data = pair
-        return (data.get("times_seen", 0), data.get("last_seen", ""))
-
-    items.sort(key=_sort_key, reverse=True)
+    now = datetime.now()
+    items.sort(key=lambda pair: _weak_point_weight(pair[1], now), reverse=True)
     return items[:limit]
 
 
@@ -489,9 +555,19 @@ def get_profile_summary(user_id: str) -> str:
         if predicted:
             parts.append(f"潜在知识薄弱点（JD分析预测）: {', '.join(predicted)}")
 
+    consolidated = _top_consolidated_patterns(profile)
+    if consolidated:
+        parts.append("跨领域规律（系统从多次训练归纳）:\n  - " + "\n  - ".join(consolidated))
+
     if profile.get("strong_points"):
+        # 按时间倒序: 列表是插入序,直接 [:5] 永远只注入最早的几条
+        recent_strong = sorted(
+            profile["strong_points"],
+            key=lambda s: s.get("first_seen", ""),
+            reverse=True,
+        )
         points = ", ".join(
-            p for p in (_clean_point_text(s.get("point")) for s in profile["strong_points"][:5]) if p
+            p for p in (_clean_point_text(s.get("point")) for s in recent_strong[:5]) if p
         )
         if points:
             parts.append(f"知识强项: {points}")
@@ -532,7 +608,11 @@ def get_profile_summary_for_drill(user_id: str) -> str:
     profile = _load_profile(user_id)
     parts = []
 
-    # behavior_signals 是天然跨 topic 的,直接注入 top N
+    # consolidated patterns 和 behavior_signals 都是天然跨 topic 的,直接注入 top N
+    consolidated = _top_consolidated_patterns(profile)
+    if consolidated:
+        parts.append("跨领域规律（系统从多次训练归纳）:\n  - " + "\n  - ".join(consolidated))
+
     top_behaviors = _top_behavior_signals(profile, polarity="negative", limit=3)
     if top_behaviors:
         lines = [
@@ -554,6 +634,67 @@ def get_profile_summary_for_drill(user_id: str) -> str:
         parts.append(f"已完成 {profile['stats']['total_sessions']} 次模拟面试")
 
     return "\n".join(parts) if parts else "新用户，暂无历史数据"
+
+
+def _compact_profile_for_extract(profile: dict) -> str:
+    """Stage 1 Extract prompt 的紧凑画像视图。
+
+    全量 json.dumps(profile) 会把 archived 条目、整个 score_history、behavior
+    examples 全部塞进 prompt，随使用量无界膨胀，且旧数据会锚定 LLM。
+    只注入活跃子集；behavior_signals 不在这里——prompt 有独立的
+    existing_behavior_signals 区块。
+    """
+    parts = []
+    if profile.get("target_role"):
+        parts.append(f"目标岗位: {profile['target_role']}")
+
+    now = datetime.now()
+    active_weak = _active_knowledge_weak_points(profile)
+    observed = sorted(
+        (w for w in active_weak if w.get("source", "observed") == "observed"),
+        key=lambda w: _weak_point_weight(w, now),
+        reverse=True,
+    )[:10]
+    if observed:
+        lines = [
+            f"- {w['point']} (领域: {w.get('topic', '?')}, 出现 {w.get('times_seen', 1)} 次)"
+            for w in observed
+        ]
+        parts.append("活跃知识薄弱点:\n" + "\n".join(lines))
+
+    consolidated = _top_consolidated_patterns(profile)
+    if consolidated:
+        parts.append("跨领域规律:\n" + "\n".join(f"- {p}" for p in consolidated))
+
+    if profile.get("strong_points"):
+        recent_strong = sorted(
+            profile["strong_points"],
+            key=lambda s: s.get("first_seen", ""),
+            reverse=True,
+        )[:5]
+        parts.append("知识强项: " + ", ".join(s["point"] for s in recent_strong))
+
+    if profile.get("topic_mastery"):
+        lines = []
+        for t, v in profile["topic_mastery"].items():
+            score = v.get("score", v.get("level", 0) * 20)
+            notes = (v.get("notes") or "")[:50]
+            lines.append(f"- {t}: {score}/100" + (f" — {notes}" if notes else ""))
+        parts.append("领域掌握度:\n" + "\n".join(lines))
+
+    if profile.get("communication", {}).get("style"):
+        parts.append(f"沟通风格: {profile['communication']['style']}")
+    tp = profile.get("thinking_patterns", {})
+    if tp.get("gaps"):
+        parts.append("思维短板: " + ", ".join(tp["gaps"][:5]))
+    if tp.get("strengths"):
+        parts.append("思维优势: " + ", ".join(tp["strengths"][:5]))
+
+    stats = profile.get("stats", {})
+    if stats.get("total_sessions"):
+        parts.append(f"已完成 {stats['total_sessions']} 次训练, 综合平均分 {stats.get('avg_score', '?')}")
+
+    return "\n\n".join(parts) if parts else "新用户，暂无历史画像"
 
 
 # ── Mem0-style LLM profile update ──
@@ -800,9 +941,9 @@ def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
         ]
         if active_weak:
             from backend.vector_memory import _embed, _cosine_similarity
-            sp_vec = _embed(sp_text)
+            sp_vec = _embed(sp_text, user_id)
             weak_texts = [w["point"] for _, w in active_weak]
-            weak_vecs = np.stack([_embed(t) for t in weak_texts])
+            weak_vecs = np.stack([_embed(t, user_id) for t in weak_texts])
             sims = _cosine_similarity(sp_vec, weak_vecs)
             best_local = int(np.argmax(sims))
             if float(sims[best_local]) >= 0.5:
@@ -903,6 +1044,53 @@ def _update_thinking_patterns(profile: dict, patterns: dict, user_id: str):
         _append_if_novel(tp["strengths"], s, "thinking_strength", user_id)
     for g in patterns.get("new_gaps", []):
         _append_if_novel(tp["gaps"], g, "thinking_gap", user_id)
+
+
+def _decay_consolidated_patterns(profile: dict, now: str) -> int:
+    """支撑证据大多已改善的 consolidated pattern 自动降权/标记改善（确定性，无 LLM）。
+
+    pattern 的 consolidates 存的是支撑它的原始弱点文本。原始弱点被训练改善后，
+    pattern 不该继续以原 confidence 置顶：
+    - 全部支撑点 improved → pattern 也标记 improved
+    - 过半 improved → 一次性降 confidence（用 history 事件保证幂等）
+    支撑点文本被 UPDATE 改写后匹配不到 → 保守跳过，不衰减。
+    Returns number of patterns changed.
+    """
+    originals = {
+        wp.get("point", ""): wp
+        for wp in profile.get("weak_points", [])
+        if wp.get("source", "observed") != "consolidated"
+    }
+    changed = 0
+    for wp in profile.get("weak_points", []):
+        if wp.get("source") != "consolidated" or wp.get("archived") or wp.get("improved"):
+            continue
+        supports = [originals[p] for p in wp.get("consolidates", []) if p in originals]
+        if not supports:
+            continue
+        improved_ratio = sum(1 for s in supports if s.get("improved")) / len(supports)
+        if improved_ratio >= 1.0:
+            wp["improved"] = True
+            wp["improved_at"] = now
+            wp.setdefault("history", []).append({
+                "date": now,
+                "event": "improved",
+                "reason": "all_supporting_points_improved",
+            })
+            changed += 1
+        elif improved_ratio >= 0.5:
+            already_decayed = any(
+                h.get("event") == "confidence_decayed" for h in wp.get("history", [])
+            )
+            if not already_decayed:
+                wp["confidence"] = round(max(0.0, wp.get("confidence", 0.7) - 0.2), 2)
+                wp.setdefault("history", []).append({
+                    "date": now,
+                    "event": "confidence_decayed",
+                    "reason": f"{improved_ratio:.0%}_supporting_points_improved",
+                })
+                changed += 1
+    return changed
 
 
 def _archive_stale_weak_points(profile: dict):
@@ -1081,6 +1269,7 @@ async def llm_update_profile(
             )
 
         _archive_stale_weak_points(profile)
+        _decay_consolidated_patterns(profile, now)
 
         _save_profile(profile, user_id)
 
@@ -1177,6 +1366,62 @@ ID 复用优先级最高：能用已有 ID 就**绝对不要**起新 ID。namesp
 """
 
 
+def build_calibration_ops(questions: list, answers: list, scores: list) -> list:
+    """答题自评 vs 实际得分的确定性元认知校准，零 LLM 调用。
+
+    自评有把握（confidence=high）但得分 ≤4 → 过度自信证据；
+    自评没把握（confidence=low）但得分 ≥8 → 过度保守证据。
+    每场每个方向最多一条 op，snippet 带量化比例和例题。
+    ADD 落在已有 ID 上会被 _apply_behavior_ops 降级为 UPDATE（语义锚定在首次 description）。
+    """
+    conf_map = {}
+    for a in answers or []:
+        if isinstance(a, dict) and a.get("confidence") in ("high", "low"):
+            conf_map[a.get("question_id")] = a["confidence"]
+    if not conf_map:
+        return []
+
+    q_text = {q.get("id"): q.get("question", "") for q in questions or [] if isinstance(q, dict)}
+    score_map = {}
+    for s in scores or []:
+        if not isinstance(s, dict):
+            continue
+        try:
+            score_map[s.get("question_id")] = float(s["score"])
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    high = [(qid, sc) for qid, sc in score_map.items() if conf_map.get(qid) == "high"]
+    low = [(qid, sc) for qid, sc in score_map.items() if conf_map.get(qid) == "low"]
+
+    ops = []
+    over = [(qid, sc) for qid, sc in high if sc <= 4]
+    if over:
+        qid, sc = over[0]
+        example = (q_text.get(qid) or "")[:30]
+        ops.append({
+            "action": "ADD",
+            "id": "metacognition.overconfident",
+            "namespace": "metacognition",
+            "polarity": "negative",
+            "description": "自评有把握的题实际得分偏低，自我评估偏高",
+            "snippet": f"自评有把握的 {len(high)} 题中 {len(over)} 题得分 ≤4（如「{example}」{sc:g}/10）",
+        })
+    under = [(qid, sc) for qid, sc in low if sc >= 8]
+    if under:
+        qid, sc = under[0]
+        example = (q_text.get(qid) or "")[:30]
+        ops.append({
+            "action": "ADD",
+            "id": "metacognition.underconfident",
+            "namespace": "metacognition",
+            "polarity": "negative",
+            "description": "自评没把握的题实际得分很高，自我评估偏保守",
+            "snippet": f"自评没把握的 {len(low)} 题中 {len(under)} 题得分 ≥8（如「{example}」{sc:g}/10）",
+        })
+    return ops
+
+
 async def extract_behavior_ops(transcript: str, user_id: str, mode: str, topic: str | None = None) -> list:
     """Behavior-axis-only extraction for non-resume modes.
 
@@ -1245,7 +1490,7 @@ async def update_profile_after_interview(
         )
 
     extract_msg = EXTRACT_PROMPT.format(
-        current_profile=json.dumps(profile, ensure_ascii=False),
+        current_profile=_compact_profile_for_extract(profile),
         existing_behavior_signals=_format_existing_behavior_signals(profile),
         mode=mode,
         topic=topic or "综合",
@@ -1311,6 +1556,48 @@ CONSOLIDATE_COOLDOWN_HOURS = 24      # 两次 consolidation 之间的最小间�
 CONSOLIDATE_MIN_SUPPORTING = 2       # 一条 pattern 至少需要引用的 wp 数
 CONSOLIDATE_MIN_SPANNING_TOPICS = 2  # 必须跨多少个不同 topic
 CONSOLIDATE_MAX_STATEMENT_LEN = 80   # pattern 描述的字符上限
+
+PATTERN_FEEDBACK_STEP_DOWN = 0.3     # 用户点"不准"一次降的 confidence
+PATTERN_FEEDBACK_STEP_UP = 0.1       # 用户点"准"一次升的 confidence
+PATTERN_ARCHIVE_CONFIDENCE = 0.5     # confidence 低于这个直接归档
+
+
+async def apply_pattern_feedback(user_id: str, point: str, verdict: str) -> dict | None:
+    """用户对 consolidated pattern 的反馈 — 防 LLM 编造规律的最后防线。
+
+    verdict: accurate（confidence 升）| inaccurate（confidence 降，低于阈值归档）
+             | acknowledged（仅标记已读）。
+    任何反馈都意味着用户看过这条规律 → user_acknowledged=True。
+    按 point 文本定位（pattern 无独立 ID，文件即真相）。找不到返回 None。
+    """
+    async with _get_profile_lock(user_id):
+        profile = _load_profile(user_id)
+        now = datetime.now().isoformat()
+        target = None
+        for wp in profile.get("weak_points", []):
+            if (wp.get("source") == "consolidated"
+                    and wp.get("point") == point
+                    and not wp.get("archived")):
+                target = wp
+                break
+        if target is None:
+            return None
+
+        target["user_acknowledged"] = True
+        confidence = target.get("confidence", 0.7)
+        if verdict == "accurate":
+            target["confidence"] = round(min(1.0, confidence + PATTERN_FEEDBACK_STEP_UP), 2)
+            target.setdefault("history", []).append({"date": now, "event": "user_confirmed"})
+        elif verdict == "inaccurate":
+            target["confidence"] = round(max(0.0, confidence - PATTERN_FEEDBACK_STEP_DOWN), 2)
+            target.setdefault("history", []).append({"date": now, "event": "user_refuted"})
+            if target["confidence"] < PATTERN_ARCHIVE_CONFIDENCE:
+                target["archived"] = True
+                target["archived_at"] = now
+                target["archived_reason"] = "user_refuted"
+
+        _save_profile(profile, user_id)
+        return target
 
 CONSOLIDATE_PROMPT = """你是面试教练的模式识别引擎。你的任务是从用户的薄弱点观察列表里,
 识别**用户自己可能没意识到的跨领域规律** (pattern)。
