@@ -49,3 +49,7 @@ design/
 
 # 部署：本机专属 compose 覆盖（端口/绑定/healthcheck），仅存在于服务器，不进仓库
 docker-compose.prod.yml
+
+# cron 定期更新的运行时产物（日志 + flock 锁），不进仓库
+logs/
+.cron-update.lock
