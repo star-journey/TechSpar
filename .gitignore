@@ -46,3 +46,6 @@ design/
 
 # Claude Code local state (worktrees, settings)
 .claude/
+
+# 部署：本机专属 compose 覆盖（端口/绑定/healthcheck），仅存在于服务器，不进仓库
+docker-compose.prod.yml
