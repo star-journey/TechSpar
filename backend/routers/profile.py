@@ -94,7 +94,7 @@ def _generate_retrospective_background(task_id: str, topic: str, user_id: str):
     try:
         from backend.llm_provider import get_langchain_llm
         from backend.memory import _load_profile, _save_profile
-        from backend.prompts.interviewer import TOPIC_RETROSPECTIVE_PROMPT
+        from backend.prompts.interviewer import TOPIC_RETROSPECTIVE_PROMPT, MATH_FORMAT_INSTRUCTION
 
         sessions = list_sessions_by_topic(topic, user_id=user_id)
         profile = _load_profile(user_id)
@@ -130,6 +130,7 @@ def _generate_retrospective_background(task_id: str, topic: str, user_id: str):
             session_history="\n".join(history_lines),
             mastery_info=mastery_text,
         )
+        prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
 
         llm = get_langchain_llm(user_id)
         response = llm.invoke([

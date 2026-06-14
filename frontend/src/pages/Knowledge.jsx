@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import ReactMarkdown from "react-markdown";
+import Markdown from "../components/Markdown";
 import { Menu, X, Sparkles, ChevronRight, ChevronDown } from "lucide-react";
 import { getTopicIcon, ICON_OPTIONS } from "../utils/topicIcons";
 import {
@@ -321,7 +321,7 @@ export default function Knowledge() {
                             <>
                               {(editContent[f.filename] ?? f.content)?.trim() ? (
                                 <div className="md-content text-sm leading-6 text-text">
-                                  <ReactMarkdown>{editContent[f.filename] ?? f.content}</ReactMarkdown>
+                                  <Markdown>{editContent[f.filename] ?? f.content}</Markdown>
                                 </div>
                               ) : (
                                 <div className="text-dim text-sm py-6 text-center">空文件，点「编辑」添加内容</div>
@@ -366,7 +366,7 @@ export default function Knowledge() {
                 <>
                   {highFreq.trim() ? (
                     <div className="md-content text-sm leading-6 text-text rounded-xl border border-border bg-bg p-4">
-                      <ReactMarkdown>{highFreq}</ReactMarkdown>
+                      <Markdown>{highFreq}</Markdown>
                     </div>
                   ) : (
                     <div className="text-dim text-sm py-10 text-center rounded-xl border border-border bg-bg">暂无高频题，点「编辑」添加</div>

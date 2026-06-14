@@ -15,7 +15,7 @@ from backend.config import settings
 from backend.llm_provider import get_langchain_llm
 from backend.indexer import query_resume
 from backend.memory import get_profile_summary
-from backend.prompts.interviewer import RESUME_INTERVIEWER_SYSTEM
+from backend.prompts.interviewer import RESUME_INTERVIEWER_SYSTEM, MATH_FORMAT_INSTRUCTION
 
 logger = logging.getLogger("uvicorn")
 
@@ -99,6 +99,7 @@ def _make_init_interview(user_id: str):
             asked_questions="无",
             user_profile=profile_summary,
         )
+        system_prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
 
         llm = get_langchain_llm(user_id)
         response = await llm.ainvoke([
@@ -135,6 +136,7 @@ def _make_interviewer_ask(user_id: str):
             asked_questions=asked_str,
             user_profile=profile_summary,
         )
+        system_prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
 
         llm = get_langchain_llm(user_id)
         messages = [SystemMessage(content=system_prompt)] + list(state.get("messages", []))

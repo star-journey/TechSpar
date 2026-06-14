@@ -594,6 +594,7 @@
   border-top: 1px solid var(--border);
   margin: 12px 0;
 }
+.md-content .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 
 .glass-obsidian {
   background: rgba(15, 23, 42, 0.7);

@@ -3,6 +3,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from backend.llm_provider import get_langchain_llm
 from backend.prompts.reviewer import REVIEW_SYSTEM
+from backend.prompts.interviewer import MATH_FORMAT_INSTRUCTION
 from backend.models import InterviewMode
 
 
@@ -78,6 +79,7 @@ def generate_review(
         transcript=transcript,
         extra_context=extra,
     )
+    prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
 
     llm = get_langchain_llm(user_id)
     response = llm.invoke([

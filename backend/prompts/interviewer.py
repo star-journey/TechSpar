@@ -1,5 +1,17 @@
 """面试官 System Prompts."""
 
+# ── 数学公式格式（追加到各技术类 prompt 末尾，不参与 .format()）──
+
+MATH_FORMAT_INSTRUCTION = r"""## 数学公式格式
+- 涉及数学符号/公式时一律用 LaTeX：行内用 $...$，独立成行用 $$...$$
+- 例：写 $\log \pi_\theta(y \mid x)$，不要写 log pi_theta；用 $\frac{a}{b}$、$\sum_i$、$\pi_{\text{ref}}$ 这类记号
+- 不要把公式放进代码块（``` 或反引号）——代码块不会被渲染成公式
+"""
+
+MATH_JSON_NOTE = r"""- 注意：公式处于 JSON 字符串中，反斜杠必须双写转义，如 "$\\log \\pi_\\theta$"，否则 JSON 解析会失败
+"""
+
+
 # ── 目标岗位推断 ──
 
 INFER_TARGET_ROLE_PROMPT = """根据以下简历内容，推断该候选人最可能应聘的岗位名称。

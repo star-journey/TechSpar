@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
+import Markdown from "../components/Markdown";
 import {
   ArrowLeft,
   CalendarDays,
@@ -294,7 +294,7 @@ export default function TopicDetail() {
                   >
                     <div className="text-sm font-semibold text-text">{section.title}</div>
                     <div className="md-content mt-2 text-sm leading-6 text-text">
-                      <ReactMarkdown>{section.markdown}</ReactMarkdown>
+                      <Markdown>{section.markdown}</Markdown>
                     </div>
                   </div>
                 ))}
@@ -570,7 +570,7 @@ function FullRetrospectiveModal({ open, retrospective, sectionCount, updatedAt, 
 
         <div className="overflow-y-auto px-5 py-5 md:px-6">
           <div className="md-content text-sm leading-7 text-text">
-            <ReactMarkdown>{retrospective}</ReactMarkdown>
+            <Markdown>{retrospective}</Markdown>
           </div>
         </div>
       </div>

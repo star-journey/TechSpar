@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
+import Markdown from "../components/Markdown";
 import { Check, Minus, Star } from "lucide-react";
 import ChatBubble from "../components/ChatBubble";
 import {
@@ -540,7 +540,7 @@ export default function Interview() {
                   </div>
                   <div className="text-base leading-[1.8]">
                     <div className="md-content">
-                      <ReactMarkdown>{currentQ.question}</ReactMarkdown>
+                      <Markdown>{currentQ.question}</Markdown>
                     </div>
                   </div>
                   {isJobPrep && currentQ.intent && (

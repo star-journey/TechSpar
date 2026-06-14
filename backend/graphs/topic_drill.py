@@ -14,6 +14,8 @@ from backend.prompts.interviewer import (
     DRILL_BATCH_EVAL_PROMPT,
     DRILL_BATCH_EVAL_REF_APPENDIX,
     DRILL_QUESTION_GEN_PROMPT,
+    MATH_FORMAT_INSTRUCTION,
+    MATH_JSON_NOTE,
 )
 
 
@@ -153,6 +155,7 @@ def generate_drill_questions(
         num_questions=num_questions,
         weak_count=weak_count,
     )
+    prompt += "\n\n" + MATH_FORMAT_INSTRUCTION + MATH_JSON_NOTE
 
     llm = get_langchain_llm(user_id)
     response = llm.invoke([
@@ -219,6 +222,7 @@ def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict
     )
     if include_reference_answer:
         prompt += DRILL_BATCH_EVAL_REF_APPENDIX
+    prompt += "\n\n" + MATH_FORMAT_INSTRUCTION + MATH_JSON_NOTE
 
     llm = get_langchain_llm(user_id)
     response = llm.invoke([

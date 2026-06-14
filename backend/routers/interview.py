@@ -978,7 +978,7 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
 
     from backend.indexer import retrieve_topic_context
     from backend.llm_provider import get_langchain_llm
-    from backend.prompts.interviewer import REFERENCE_ANSWER_PROMPT
+    from backend.prompts.interviewer import REFERENCE_ANSWER_PROMPT, MATH_FORMAT_INSTRUCTION
 
     topics = load_topics(user_id)
     topic_name = topics.get(topic, {}).get("name", topic)
@@ -990,6 +990,7 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
         question=question,
         knowledge_context=knowledge_context,
     )
+    prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
     llm = get_langchain_llm(user_id)
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"reference_answer": response.content.strip()}

@@ -1,6 +1,6 @@
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
+import Markdown from "../components/Markdown";
 import { BookOpen, BriefcaseBusiness, Sparkles, RotateCcw, RefreshCw } from "lucide-react";
 import { getReview, getReferenceAnswer, startInterview, startJobPrep } from "../api/interview";
 import { Button } from "@/components/ui/button";
@@ -360,9 +360,9 @@ function DrillReview({ scores, overall, questions, answers, topic, sessionId, re
                           </Button>
                         </div>
                         <div className="md-content bg-hover rounded-lg px-3.5 py-3">
-                          <ReactMarkdown>
+                          <Markdown>
                             {refState[q.id].versions[refState[q.id].currentIndex].content}
-                          </ReactMarkdown>
+                          </Markdown>
                         </div>
                         {refError[q.id] && (
                           <div className="text-[12px] text-red mt-1.5">{refError[q.id]}</div>
@@ -709,7 +709,7 @@ export default function Review() {
             <Card className="mb-6">
               <CardContent className="p-5 md:p-8 leading-[1.8] text-[15px]">
                 <div className="md-content">
-                  <ReactMarkdown>{review || ""}</ReactMarkdown>
+                  <Markdown>{review || ""}</Markdown>
                 </div>
               </CardContent>
             </Card>

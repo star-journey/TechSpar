@@ -1,4 +1,4 @@
-import ReactMarkdown from "react-markdown";
+import Markdown from "./Markdown";
 
 export default function ChatBubble({ role, content }) {
   if (role === "user") {
@@ -16,7 +16,7 @@ export default function ChatBubble({ role, content }) {
       <div className="h-px bg-border mb-6" />
       <div className="max-w-[720px] md:max-w-[720px] leading-[1.8] text-[15px] text-text">
         <div className="md-content">
-          <ReactMarkdown>{content}</ReactMarkdown>
+          <Markdown>{content}</Markdown>
         </div>
       </div>
     </div>
