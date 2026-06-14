@@ -45,6 +45,7 @@ from backend.storage.sessions import (
     STATUS_REVIEWED,
     STATUS_REVIEWING,
     append_message,
+    append_reference_answer,
     bulk_set_reference_answers,
     create_session,
     expire_stale_reviewing,
@@ -970,11 +971,24 @@ async def _update_job_prep_profile(
 
 @router.post("/interview/reference-answer")
 async def generate_reference_answer(body: dict, user_id: str = Depends(get_current_user)):
-    """Generate a reference answer for a specific question using LLM + knowledge base."""
-    topic = body.get("topic", "").strip()
-    question = body.get("question", "").strip()
-    if not topic or not question:
-        raise HTTPException(400, "topic and question are required")
+    """Generate a new reference-answer version for a question in a session."""
+    session_id = (body.get("session_id") or "").strip()
+    question_id = body.get("question_id")
+    if not session_id or question_id is None:
+        raise HTTPException(400, "session_id and question_id are required")
+
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    topic = session.get("topic") or ""
+    question = next(
+        (q.get("question") for q in (session.get("questions") or [])
+         if str(q.get("id")) == str(question_id)),
+        None,
+    )
+    if not question:
+        raise HTTPException(404, "question not found in session")
 
     from backend.indexer import retrieve_topic_context
     from backend.llm_provider import get_langchain_llm
@@ -993,4 +1007,7 @@ async def generate_reference_answer(body: dict, user_id: str = Depends(get_curre
     prompt += "\n\n" + MATH_FORMAT_INSTRUCTION
     llm = get_langchain_llm(user_id)
     response = llm.invoke([HumanMessage(content=prompt)])
-    return {"reference_answer": response.content.strip()}
+    versions = append_reference_answer(
+        session_id, question_id, response.content.strip(), user_id=user_id
+    )
+    return {"versions": versions}
