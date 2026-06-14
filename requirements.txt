@@ -6,6 +6,8 @@ langgraph-checkpoint-sqlite>=2.0.0
 
 # OpenAI-compatible embedding client (RAG / 记忆向量;自写轻量检索,无 LlamaIndex)
 openai>=1.0.0
+# 向量余弦检索的数值后端（indexer / memory / graph / copilot 直接 import）
+numpy>=1.26.0
 
 # Optional local embedding dependencies live in requirements.local-embedding.txt
 
@@ -27,6 +29,9 @@ oss2>=2.18.0
 # Auth
 bcrypt>=4.0.0
 python-jose[cryptography]>=3.3.0
+
+# HTTP（transcribe 直接 import；此前仅靠 oss2/tavily 传递依赖）
+requests>=2.31.0
 
 # Web search (Copilot Company Researcher)
 tavily-python>=0.3.0
