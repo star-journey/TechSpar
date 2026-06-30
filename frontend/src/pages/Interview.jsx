@@ -97,6 +97,7 @@ export default function Interview() {
 
         if (data.mode === "topic_drill" || data.mode === "jd_prep") {
           const saved = {};
+          let reconstructedFromTranscript = false;
           for (const a of data.answers_draft || []) {
             if (a && a.answer) saved[a.question_id] = a.answer;
           }
@@ -108,9 +109,14 @@ export default function Interview() {
               const q = (data.questions || []).find((q) => q.question === prev.content);
               if (q) saved[q.id] = entry.content;
             });
+            reconstructedFromTranscript = !!Object.keys(saved).length;
           }
           const maxIndex = Math.max((data.questions || []).length - 1, 0);
-          const nextIndex = Math.min(data.current_index || 0, maxIndex);
+          let nextIndex = Math.min(data.current_index || 0, maxIndex);
+          if (reconstructedFromTranscript && !data.current_index) {
+            const firstUnanswered = (data.questions || []).findIndex((q) => !saved[q.id]);
+            if (firstUnanswered > 0) nextIndex = firstUnanswered;
+          }
           const currentQuestion = (data.questions || [])[nextIndex];
           setAnswers(saved);
           setCurrentIndex(nextIndex);
@@ -163,7 +169,7 @@ export default function Interview() {
 
   const draftAnswers = useCallback((sourceAnswers = answers, activeText = drillInput) => {
     const merged = { ...sourceAnswers };
-    if (currentQ && activeText.trim()) merged[currentQ.id] = activeText.trim();
+    if (currentQ) merged[currentQ.id] = activeText.trim();
     return merged;
   }, [answers, currentQ, drillInput]);
 
@@ -185,6 +191,14 @@ export default function Interview() {
     }, 800);
     return () => clearTimeout(timer);
   }, [hydrated, isBatchMode, questions, answers, drillInput, currentIndex, submitted, draftAnswers, persistDraft]);
+
+  // Mirror the saved answer into the textarea whenever the active question changes,
+  // so paging back to review and forward again shows each answer instead of a blank
+  // box. Keyed only on the index — never re-runs while typing.
+  useEffect(() => {
+    if (isBatchMode) setDrillInput(answers[currentQ?.id] || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIndex, isBatchMode]);
 
   const handleDrillSubmit = () => {
     const text = drillInput.trim();
@@ -226,9 +240,10 @@ export default function Interview() {
 
   const handleEndBatch = async () => {
     if (submitting) return;
-    // Allow retry when the previous background evaluation errored.
+    // Allow retry when a prior evaluation errored — either a live error task or a
+    // session reopened from history already in the review_failed state.
     const priorTask = tasks.find((t) => t.id === sessionId);
-    const isRetry = submitted && priorTask?.status === "error";
+    const isRetry = (submitted && priorTask?.status === "error") || sessionStatus === "review_failed";
     if (submitted && !isRetry) return;
     setSubmitting(true);
     try {
@@ -243,6 +258,7 @@ export default function Interview() {
       await endInterview(sessionId, answerList);
       setSubmitted(true);
       setFinished(true);
+      setSessionStatus("reviewing");  // clear any stale review_failed so the retry UI resets
       const label = isJobPrep ? "JD 备面复盘生成中" : "专项训练复盘生成中";
       const type = isJobPrep ? "jd_review" : "drill_review";
       startTask(sessionId, type, label);
@@ -425,7 +441,7 @@ export default function Interview() {
           </div>
           {(() => {
             const task = tasks.find((t) => t.id === sessionId);
-            const headerTaskError = task?.status === "error";
+            const headerTaskError = task?.status === "error" || sessionStatus === "review_failed";
             const headerDisabled = submitting || (submitted && !headerTaskError);
             return (
               <Button variant="destructive" size="sm" onClick={handleEndBatch} disabled={headerDisabled}>
@@ -459,8 +475,8 @@ export default function Interview() {
                   {(() => {
                     const task = tasks.find((t) => t.id === sessionId);
                     const taskDone = task?.status === "done";
-                    const taskError = task?.status === "error";
-                    const canRetry = submitted && taskError;
+                    const taskError = task?.status === "error" || sessionStatus === "review_failed";
+                    const canRetry = (submitted || sessionStatus === "review_failed") && taskError;
                     return (
                       <>
                         <Button

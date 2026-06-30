@@ -204,30 +204,6 @@ def evaluate_job_prep_answers(
     except Exception as exc:
         logger.error(f"JD prep evaluation failed: {exc}")
         logger.error(f"LLM raw response: {response.content[:800]}")
-        return {
-            "scores": [
-                {
-                    "question_id": q["id"],
-                    "score": None,
-                    "assessment": "评估解析失败，请重试",
-                    "improvement": "",
-                    "understanding": "",
-                    "weak_point": None,
-                    "key_missing": [],
-                    "role_expectation": "",
-                }
-                for q in questions
-            ],
-            "overall": {
-                "avg_score": None,
-                "summary": "评估结果解析失败，请重新提交。",
-                "role_fit_summary": "",
-                "interviewer_hotspots": [],
-                "prep_priorities": [],
-                "new_weak_points": [],
-                "new_strong_points": [],
-                "communication_observations": {},
-                "thinking_patterns": {},
-                "dimension_scores": {},
-            },
-        }
+        # Fail loudly: the caller marks the session review_failed and the UI offers a
+        # retry. A fallback "解析失败" review would persist as reviewed — a dead end.
+        raise RuntimeError("评估结果解析失败，请重新提交。") from exc
