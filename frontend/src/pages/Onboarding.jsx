@@ -1,7 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { getSettings, updateSettings } from "../api/interview";
+import {
+  getSettings,
+  updateSettings,
+  testLLMConnection,
+  testEmbeddingConnection,
+} from "../api/interview";
 import { Loader2, Server, Boxes, ArrowRight, ArrowLeft, Eye, EyeOff, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +23,7 @@ export default function Onboarding() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [showEmbKey, setShowEmbKey] = useState(false);
@@ -49,12 +55,45 @@ export default function Onboarding() {
   }, []);
 
   const llmReady = apiKey.trim() && model.trim();
-  const embReady = embApiKey.trim();
+  const embReady = embApiKey.trim() && embApiModel.trim();
+
+  // 进入下一步前先实测 LLM；连不通就拦住，不让继续。
+  async function handleNext() {
+    setTesting(true);
+    setError("");
+    try {
+      const r = await testLLMConnection({
+        api_base: apiBase.trim(),
+        api_key: apiKey.trim(),
+        model: model.trim(),
+      });
+      if (!r.ok) {
+        setError("LLM 连接失败：" + r.error);
+        return;
+      }
+      setStep(2);
+    } catch (e) {
+      setError("LLM 连接测试失败：" + e.message);
+    } finally {
+      setTesting(false);
+    }
+  }
 
   async function handleFinish() {
     setSaving(true);
     setError("");
     try {
+      const r = await testEmbeddingConnection({
+        backend: "api",
+        api_base: embApiBase.trim(),
+        api_key: embApiKey.trim(),
+        api_model: embApiModel.trim(),
+      });
+      if (!r.ok) {
+        setError("Embedding 连接失败：" + r.error);
+        setSaving(false);
+        return;
+      }
       await updateSettings({
         llm: {
           api_base: apiBase.trim(),
@@ -211,13 +250,15 @@ export default function Onboarding() {
                 )}
 
                 {step === 1 ? (
-                  <Button variant="gradient" disabled={!llmReady} onClick={() => setStep(2)}>
-                    下一步 <ArrowRight size={15} className="ml-1.5" />
+                  <Button variant="gradient" disabled={!llmReady || testing} onClick={handleNext}>
+                    {testing && <Loader2 size={15} className="mr-1.5 animate-spin" />}
+                    {testing ? "测试连接中..." : "下一步"}
+                    {!testing && <ArrowRight size={15} className="ml-1.5" />}
                   </Button>
                 ) : (
                   <Button variant="gradient" disabled={!embReady || saving} onClick={handleFinish}>
                     {saving && <Loader2 size={15} className="mr-1.5 animate-spin" />}
-                    {saving ? "保存中..." : "完成,开始使用"}
+                    {saving ? "测试并保存中..." : "完成,开始使用"}
                   </Button>
                 )}
               </div>

@@ -17,8 +17,16 @@ import {
   UserCog,
   RotateCw,
   KeyRound,
+  Plug,
+  XCircle,
 } from "lucide-react";
-import { getSettings, updateSettings, rebuildEmbeddingIndex } from "../api/interview";
+import {
+  getSettings,
+  updateSettings,
+  rebuildEmbeddingIndex,
+  testLLMConnection,
+  testEmbeddingConnection,
+} from "../api/interview";
 import {
   getVoiceprintStatus,
   putVoiceprintCredentials,
@@ -112,6 +120,10 @@ export default function Settings() {
   const [numQuestions, setNumQuestions] = useState(10);
   const [divergence, setDivergence] = useState(3);
   const [showKey, setShowKey] = useState(false);
+
+  // 连接测试结果：null | { status: "testing" | "ok" | "fail", error? }
+  const [llmTest, setLlmTest] = useState(null);
+  const [embTest, setEmbTest] = useState(null);
 
   // Embedding 配置（每用户，hot-reload；空字段继承全局默认）
   const [embBackend, setEmbBackend] = useState("");  // "" | api | local
@@ -450,6 +462,34 @@ export default function Settings() {
     }
   };
 
+  const handleTestLLM = async () => {
+    setLlmTest({ status: "testing" });
+    try {
+      const r = await testLLMConnection({ api_base: apiBase, api_key: apiKey, model });
+      setLlmTest(r.ok ? { status: "ok" } : { status: "fail", error: r.error });
+    } catch (err) {
+      setLlmTest({ status: "fail", error: err.message });
+    }
+  };
+
+  const handleTestEmbedding = async () => {
+    setEmbTest({ status: "testing" });
+    try {
+      const r = await testEmbeddingConnection({
+        backend: embBackend,
+        api_base: embApiBase,
+        api_key: embApiKey,
+        api_model: embApiModel,
+        local_model: embLocalModel,
+        local_path: embLocalPath,
+        api_batch_size: embApiBatchSize,
+      });
+      setEmbTest(r.ok ? { status: "ok" } : { status: "fail", error: r.error });
+    } catch (err) {
+      setEmbTest({ status: "fail", error: err.message });
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError("");
@@ -525,6 +565,39 @@ export default function Settings() {
 
   const labelClass = "text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80";
   const inputClass = "h-12 rounded-2xl bg-card/90";
+
+  // 「测试连接」按钮 + 结果，LLM / Embedding 两处复用
+  const renderTestRow = (test, onTest) => (
+    <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border/40 pt-5">
+      <Button
+        variant="outline"
+        onClick={onTest}
+        disabled={test?.status === "testing"}
+        className="h-10 rounded-xl"
+      >
+        {test?.status === "testing" ? (
+          <>
+            <Loader2 size={15} className="mr-1.5 animate-spin" /> 测试中…
+          </>
+        ) : (
+          <>
+            <Plug size={15} className="mr-1.5" /> 测试连接
+          </>
+        )}
+      </Button>
+      {test?.status === "ok" ? (
+        <span className="flex items-center gap-1.5 text-[13px] text-emerald-500">
+          <Check size={15} /> 连接正常
+        </span>
+      ) : test?.status === "fail" ? (
+        <span className="flex items-start gap-1.5 text-[13px] text-red-500">
+          <XCircle size={15} className="mt-0.5 shrink-0" /> {test.error || "连接失败"}
+        </span>
+      ) : test?.status === "testing" ? null : (
+        <span className="text-[12px] text-dim">用当前填写的配置发一个最小请求，验证是否可用</span>
+      )}
+    </div>
+  );
 
   const TABS = [
     { id: "llm", label: "LLM 服务", icon: Server },
@@ -641,6 +714,8 @@ export default function Settings() {
                 />
               </div>
             </div>
+
+            {renderTestRow(llmTest, handleTestLLM)}
           </CardContent>
         </Card>
 
@@ -775,6 +850,8 @@ export default function Settings() {
                 </div>
               </div>
             )}
+
+            {renderTestRow(embTest, handleTestEmbedding)}
 
             {needsReindex && (
               <div className="mt-6 flex items-start gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 text-[13px] text-amber-500/90">

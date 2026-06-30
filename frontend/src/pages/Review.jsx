@@ -529,15 +529,16 @@ export default function Review() {
       if (currentMode === "jd_prep") {
         const m = meta || stateData.meta || {};
         data = await startJobPrep({
-          jd_text: m.jd_text,
+          jd_text: m.jd_text || m.jd_excerpt,  // jd_excerpt: 兼容修复前创建的旧会话
           company: m.company,
           position: m.position,
           use_resume: m.use_resume,
+          preview_data: m.preview,             // 复用已有分析,省掉一次 LLM 拆解
         });
       } else {
         data = await startInterview(currentMode, topic || stateData.topic);
       }
-      navigate(`/interview/${data.session_id}`, { state: { ...data, mode: currentMode, topic: topic || stateData.topic, meta: meta || stateData.meta } });
+      navigate(`/interview/${data.session_id}`, { state: { ...data, mode: currentMode, topic: topic || stateData.topic, meta: data.meta || meta || stateData.meta } });
     } catch (err) {
       alert("启动失败: " + err.message);
     } finally {

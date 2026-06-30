@@ -231,6 +231,46 @@ def reset_embedding_cache(user_id: str | None = None):
         _embedding_cache.pop(user_id, None)
 
 
+# ── Connectivity probes (test the *provided* config, not the saved one) ──
+
+def probe_llm(api_base: str, api_key: str, model: str) -> None:
+    """Verify an LLM config is reachable & valid by issuing a 1-token chat
+    completion. Returns None on success; raises (openai errors / ProviderNotConfigured)
+    on any failure. Drives the settings 'test connection' button and the onboarding
+    gate, so it tests the form values rather than what's persisted."""
+    from openai import OpenAI
+
+    if not api_key or not model:
+        raise ProviderNotConfigured("LLM")
+    client = OpenAI(api_key=api_key, base_url=api_base or None, timeout=20.0, max_retries=0)
+    client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": "ping"}],
+        max_tokens=1,
+        temperature=0,
+    )
+
+
+def probe_embedding(config: dict) -> None:
+    """Verify an embedding config by embedding a probe string. `config` matches
+    EmbeddingSettings (backend/api_base/api_key/api_model/local_model/local_path/...).
+    Returns None on success; raises on failure. For local mode, loading the model is
+    itself the test."""
+    if embedding_mode_of(config["backend"], config["api_base"], config["api_key"]) == "api":
+        if not config["api_key"]:
+            raise ProviderNotConfigured("Embedding")
+        model_name = embedding_api_model_of(config["api_model"], "")
+        if not model_name:
+            raise RuntimeError("Embedding Model 必填")
+        from openai import OpenAI
+
+        client = OpenAI(api_key=config["api_key"], base_url=config["api_base"] or None,
+                        timeout=20.0, max_retries=0)
+        client.embeddings.create(model=model_name, input=["ping"])
+        return
+    _build_embedding(config).get_text_embedding("ping")
+
+
 # ── Optional service credentials (per-user, no global fallback) ──
 
 def resolve_dashscope_key(user_id: str | None = None) -> str:

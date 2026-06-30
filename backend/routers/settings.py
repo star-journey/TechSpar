@@ -9,7 +9,14 @@ from fastapi.responses import StreamingResponse
 
 from backend.auth import get_current_user, is_admin_user
 from backend.config import settings
-from backend.llm_provider import embedding_signature, provider_status, reset_embedding_cache
+from backend.llm_provider import (
+    ProviderNotConfigured,
+    embedding_signature,
+    probe_embedding,
+    probe_llm,
+    provider_status,
+    reset_embedding_cache,
+)
 from backend.models import EmbeddingSettings, LLMSettings, SettingsResponse, SystemSettings
 from backend.storage.user_settings import (
     load_index_meta,
@@ -74,6 +81,46 @@ def put_user_settings(payload: SettingsResponse, user_id: str = Depends(get_curr
 
     save_user_settings(payload.training, user_id)
     return {"ok": True, "embedding_changed": embedding_changed}
+
+
+def _conn_error_message(exc: Exception) -> str:
+    """Map a probe exception to a concise Chinese hint for the test UI."""
+    import openai
+
+    if isinstance(exc, ProviderNotConfigured):
+        return "请先填写必填字段"
+    if isinstance(exc, openai.AuthenticationError):
+        return "API Key 无效（认证失败）"
+    if isinstance(exc, openai.PermissionDeniedError):
+        return "Key 无该模型权限或被拒绝访问"
+    if isinstance(exc, openai.NotFoundError):
+        return "模型不存在，或 Base URL 路径不正确"
+    if isinstance(exc, openai.APIConnectionError):
+        return "无法连接到 Base URL，请检查地址与网络"
+    msg = str(exc).strip().replace("\n", " ")
+    return msg[:300] or exc.__class__.__name__
+
+
+@router.post("/settings/test-llm")
+def test_llm_connection(payload: LLMSettings, user_id: str = Depends(get_current_user)):
+    """Probe the provided LLM config with a 1-token request. Returns {ok[, error]}
+    so the UI can show inline status and the onboarding gate can block on failure.
+    Tests the form values, not the saved config — works before first save."""
+    try:
+        probe_llm(payload.api_base, payload.api_key, payload.model)
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001 - any failure means 'not reachable'
+        return {"ok": False, "error": _conn_error_message(exc)}
+
+
+@router.post("/settings/test-embedding")
+def test_embedding_connection(payload: EmbeddingSettings, user_id: str = Depends(get_current_user)):
+    """Probe the provided embedding config by embedding a tiny string."""
+    try:
+        probe_embedding(payload.model_dump())
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001 - any failure means 'not reachable'
+        return {"ok": False, "error": _conn_error_message(exc)}
 
 
 @router.post("/settings/rebuild-index")

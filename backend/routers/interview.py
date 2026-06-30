@@ -115,7 +115,7 @@ def job_prep_start(req: JobPrepStartRequest, user_id: str = Depends(get_current_
     meta = {
         "company": preview.get("company") or (req.company or "").strip(),
         "position": preview.get("position") or (req.position or "").strip() or "JD 备面",
-        "jd_excerpt": jd_text[:1500],
+        "jd_text": jd_text,  # 完整 JD,供"再次练习"复用,无需重贴
         "use_resume": req.use_resume,
         "preview": preview,
     }
@@ -596,6 +596,31 @@ async def end_interview(
         session["status"] = STATUS_ENDED
 
     return _dispatch_review(session_id, session, user_id, background_tasks, answers_override=answers_override)
+
+
+@router.post("/interview/draft/{session_id}")
+async def save_interview_draft(
+    session_id: str,
+    body: EndDrillRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """Persist in-progress batch-mode answers so a session survives refresh/navigation.
+
+    Best-effort autosave for topic_drill / jd_prep: writes the current answers into
+    the transcript (same layout as /interview/end) while the session is still ongoing,
+    so reopening from history replays them. No-op once the session has left ongoing —
+    a late autosave must never clobber the already-submitted answer set.
+    """
+    session = get_session(session_id, user_id=user_id)
+    if not session:
+        raise HTTPException(404, "Session not found.")
+    if session["mode"] not in (InterviewMode.TOPIC_DRILL.value, InterviewMode.JD_PREP.value):
+        raise HTTPException(400, "Only batch-mode sessions support drafts.")
+    if session["status"] != STATUS_ONGOING:
+        return {"session_id": session_id, "status": session["status"], "saved": False}
+
+    save_drill_answers(session_id, body.answers, user_id=user_id)
+    return {"session_id": session_id, "status": STATUS_ONGOING, "saved": True}
 
 
 def _mode_task_type(mode: str) -> str:

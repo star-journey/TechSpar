@@ -225,8 +225,6 @@ def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict
         logger = logging.getLogger("uvicorn")
         logger.error(f"Drill evaluation failed: {e}")
         logger.error(f"LLM raw response: {response.content[:500]}")
-        # Evaluation fallback is acceptable — better than crashing
-        return {
-            "scores": [{"question_id": q["id"], "score": None, "assessment": "评估解析失败，请重试"} for q in questions],
-            "overall": {"avg_score": None, "summary": "评估结果解析失败，请重新提交。", "new_weak_points": [], "new_strong_points": []},
-        }
+        # Fail loudly so the session is marked review_failed and the UI shows a retry —
+        # a fallback "解析失败" review would persist as reviewed (dead end).
+        raise RuntimeError("评估结果解析失败，请重新提交。") from e

@@ -20,6 +20,18 @@ import { Badge } from "@/components/ui/badge";
 
 const PAGE_CLASS = "flex-1 w-full max-w-[1600px] mx-auto px-4 py-6 md:px-7 md:py-8 xl:px-10 2xl:px-12";
 
+// Survive leaving the page without starting practice — a JD analysis costs an LLM
+// call, so persist inputs + result locally and restore them on return.
+const DRAFT_KEY = "jobprep-draft";
+
+function loadDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
 function priorityVariant(priority) {
   if (priority === "high") return "destructive";
   if (priority === "medium") return "blue";
@@ -50,13 +62,14 @@ function toneClasses(tone) {
 
 export default function JobPrep() {
   const navigate = useNavigate();
-  const [company, setCompany] = useState("");
-  const [position, setPosition] = useState("");
-  const [jdText, setJdText] = useState("");
+  const initialDraft = useMemo(loadDraft, []);
+  const [company, setCompany] = useState(initialDraft.company || "");
+  const [position, setPosition] = useState(initialDraft.position || "");
+  const [jdText, setJdText] = useState(initialDraft.jdText || "");
   const [resumeFile, setResumeFile] = useState(null);
   const [useResume, setUseResume] = useState(true);
-  const [preview, setPreview] = useState(null);
-  const [previewSignature, setPreviewSignature] = useState("");
+  const [preview, setPreview] = useState(initialDraft.preview || null);
+  const [previewSignature, setPreviewSignature] = useState(initialDraft.previewSignature || "");
   const [loadingResume, setLoadingResume] = useState(true);
   const [previewing, setPreviewing] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -75,6 +88,16 @@ export default function JobPrep() {
       .catch(() => setUseResume(false))
       .finally(() => setLoadingResume(false));
   }, []);
+
+  // Best-effort: keep the workspace mirrored to localStorage so a refresh or
+  // navigation never discards a token-costing analysis. Cleared once practice starts.
+  useEffect(() => {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ company, position, jdText, preview, previewSignature }));
+    } catch {
+      // storage full / unavailable — ignore
+    }
+  }, [company, position, jdText, preview, previewSignature]);
 
   const payload = useMemo(() => ({
     company: company.trim() || null,
@@ -114,6 +137,7 @@ export default function JobPrep() {
     setError("");
     try {
       const data = await startJobPrep({ ...payload, preview_data: preview });
+      try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
       navigate(`/interview/${data.session_id}`, { state: data });
     } catch (err) {
       setError("启动失败: " + err.message);
