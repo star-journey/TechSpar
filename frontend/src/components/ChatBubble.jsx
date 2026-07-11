@@ -1,5 +1,4 @@
 import ReactMarkdown from "react-markdown";
-import { cn } from "@/lib/utils";
 
 export default function ChatBubble({ role, content }) {
   if (role === "user") {

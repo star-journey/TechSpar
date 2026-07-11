@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, FileText, Loader2, Upload, User, Users } from "lucide-react";
 import { transcribeRecording, analyzeRecording } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

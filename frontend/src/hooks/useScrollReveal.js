@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
  * Intersection Observer hook — adds `data-revealed` when element enters viewport once.
  * Pair with `.scroll-reveal` CSS class for the fade-in transition.
  */
-export default function useScrollReveal(options = {}) {
+export default function useScrollReveal({ threshold = 0.12, root = null, rootMargin = "0px" } = {}) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -24,12 +24,12 @@ export default function useScrollReveal(options = {}) {
           observer.unobserve(el);
         }
       },
-      { threshold: 0.12, ...options }
+      { threshold, root, rootMargin }
     );
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [root, rootMargin, threshold]);
 
   return ref;
 }

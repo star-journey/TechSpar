@@ -149,14 +149,18 @@ async def get_copilot_strategy_tree(prep_id: str, user_id: str = Depends(get_cur
 async def copilot_realtime_ws(ws: WebSocket, session_id: str, token: str = ""):
     """Copilot 实时面试辅助 WebSocket。"""
     from backend.auth import decode_token
-    from backend.user_context import set_current_user
+    from backend.user_context import reset_current_user, set_current_user
+
+    user_id = decode_token(token) if token else None
+    if not user_id:
+        await ws.close(code=1008, reason="Authentication required")
+        return
 
     await ws.accept()
     session = None
-    user_id = decode_token(token) if token else None
     # Bind user for this connection — realtime copilot subsystem resolves its
     # LLM/embedding via the ContextVar (create_task tasks copy the context).
-    set_current_user(user_id)
+    user_token = set_current_user(user_id)
 
     try:
         while True:
@@ -228,6 +232,7 @@ async def copilot_realtime_ws(ws: WebSocket, session_id: str, token: str = ""):
             except Exception:
                 pass
         _copilot_sessions.pop(session_id, None)
+        reset_current_user(user_token)
 
 
 async def _init_copilot_session(
@@ -235,13 +240,13 @@ async def _init_copilot_session(
     prep_id: str,
     session_id: str,
     *,
-    user_id: str | None = None,
+    user_id: str,
 ) -> dict:
     """初始化 Copilot 实时会话。"""
     from backend.copilot import voiceprint_store
     from backend.copilot.strategy_tree import StrategyTreeNavigator
 
-    prep_data = prep_store.get_prep_by_id(prep_id)
+    prep_data = prep_store.get_prep(prep_id, user_id)
     if not prep_data or prep_data["status"] != "done" or not prep_data.get("result"):
         raise ValueError("Prep session not ready")
 

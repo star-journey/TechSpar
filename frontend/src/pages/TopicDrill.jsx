@@ -6,7 +6,7 @@ import { getTopics, startInterview } from "../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 
 export default function TopicDrill() {
   const navigate = useNavigate();

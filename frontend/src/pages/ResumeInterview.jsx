@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 
 const INTERVIEW_STEPS = [
   { title: "自我介绍", desc: "基于简历背景做自我介绍，考察表达与提炼能力" },
@@ -372,4 +372,3 @@ function HistoryIcon() {
     </svg>
   );
 }
-

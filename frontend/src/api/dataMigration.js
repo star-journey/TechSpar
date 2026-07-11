@@ -2,7 +2,7 @@ import { authFetch } from "./interview";
 
 const API_BASE = "/api/data";
 
-// 触发浏览器下载当前用户的备份归档
+// 管理员下载整站全量备份归档
 export async function exportData() {
   const res = await authFetch(`${API_BASE}/export`);
   if (!res.ok) throw new Error(await res.text());
@@ -27,7 +27,7 @@ export async function exportData() {
   return { filename, size: blob.size };
 }
 
-// 上传归档并合并到当前用户。options: { dbStrategy: 'skip'|'overwrite', overwriteFiles: boolean }
+// 上传单账户归档并合并到当前用户。options: { dbStrategy: 'skip'|'overwrite', overwriteFiles: boolean }
 export async function importData(file, { dbStrategy = "skip", overwriteFiles = false } = {}) {
   const form = new FormData();
   form.append("file", file);

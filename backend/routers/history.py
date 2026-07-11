@@ -37,6 +37,15 @@ async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)
     the persisted session — the source of truth — expiring stale reviews first.
     """
     task = _task_status.get(task_id)
+    session = get_session(task_id, user_id=user_id)
+    owns_retrospective = bool(
+        task
+        and task.get("type") == "retrospective"
+        and task_id.endswith(f"_{user_id[:8]}")
+    )
+    if not session and not owns_retrospective:
+        raise HTTPException(404, "Task not found.")
+
     if not task or task.get("status") not in ("done", "error"):
         expire_stale_reviewing(user_id=user_id)
         session = get_session(task_id, user_id=user_id)

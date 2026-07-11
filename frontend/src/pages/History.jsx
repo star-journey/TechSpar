@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, CalendarDays, ChevronRight, CircleAlert, CircleCheck, Filter, Hash, LoaderCircle, Play, RotateCw, Trash2 } from "lucide-react";
 import { getHistory, deleteSession, getInterviewTopics, retryReview } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -129,10 +129,12 @@ export default function History() {
       await retryReview(session.session_id);
       const label = session.mode === "resume"
         ? "简历面试复盘生成中"
-        : session.mode === "jd_prep" ? "JD 备面复盘生成中" : "专项训练复盘生成中";
+        : session.mode === "jd_prep" ? "JD 备面复盘生成中"
+          : session.mode === "recording" ? "录音复盘生成中" : "专项训练复盘生成中";
       const type = session.mode === "resume"
         ? "resume_review"
-        : session.mode === "jd_prep" ? "jd_review" : "drill_review";
+        : session.mode === "jd_prep" ? "jd_review"
+          : session.mode === "recording" ? "recording" : "drill_review";
       startTask(session.session_id, type, label);
       // Optimistically reflect the new status so the row updates without a full refetch.
       setSessions((prev) => prev.map((s) =>
@@ -407,7 +409,7 @@ function HistoryRow({ session, onOpen, onDelete, onRetry, retrying }) {
   const createdDate = session.created_at?.slice(0, 10);
   const compactSessionId = formatSessionId(session.session_id);
   const status = session.status || "reviewed";
-  const canRetry = status === "review_failed" && session.mode !== "recording";
+  const canRetry = status === "review_failed";
 
   return (
     <Card

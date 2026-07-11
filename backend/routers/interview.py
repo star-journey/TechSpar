@@ -552,6 +552,36 @@ def _dispatch_review(
         background_tasks.add_task(_end_jd_prep_background, session_id, questions, answers, preview, meta, user_id)
         return {"session_id": session_id, "mode": mode, "status": "pending"}
 
+    if mode == InterviewMode.RECORDING.value:
+        from backend.routers.recording import _analyze_recording_background
+
+        meta = session.get("meta") or {}
+        transcript = (meta.get("source_transcript") or "").strip()
+        if not transcript:
+            transcript = next(
+                (
+                    item.get("content", "").strip()
+                    for item in session.get("transcript", [])
+                    if item.get("role") == "user" and item.get("content", "").strip()
+                ),
+                "",
+            )
+        if not transcript:
+            raise HTTPException(400, "录音会话缺少原始转写文本，无法重新生成复盘。")
+
+        update_session_status(session_id, STATUS_REVIEWING, user_id=user_id, clear_error=True)
+        _task_status[session_id] = {"status": "pending", "type": "recording"}
+        background_tasks.add_task(
+            _analyze_recording_background,
+            session_id,
+            transcript,
+            meta.get("recording_mode", "dual"),
+            meta.get("company") or None,
+            meta.get("position") or None,
+            user_id,
+        )
+        return {"session_id": session_id, "mode": mode, "status": "pending"}
+
     raise HTTPException(400, f"Unsupported mode for review: {mode}")
 
 
@@ -628,6 +658,7 @@ def _mode_task_type(mode: str) -> str:
         InterviewMode.RESUME.value: "resume_review",
         InterviewMode.TOPIC_DRILL.value: "drill_review",
         InterviewMode.JD_PREP.value: "jd_review",
+        InterviewMode.RECORDING.value: "recording",
     }.get(mode, "review")
 
 

@@ -45,11 +45,19 @@ export default function Knowledge() {
   }, []);
 
   useEffect(() => {
-    refreshTopics().then((t) => {
-      const keys = Object.keys(t);
-      if (keys.length > 0) setSelected(keys[0]);
-    });
-  }, [refreshTopics]);
+    let active = true;
+    getTopics()
+      .then((nextTopics) => {
+        if (!active) return;
+        setTopics(nextTopics);
+        const keys = Object.keys(nextTopics);
+        setSelected((current) => current && nextTopics[current] ? current : (keys[0] ?? null));
+      })
+      .catch(() => {
+        if (active) setTopics({});
+      });
+    return () => { active = false; };
+  }, []);
 
   const loadCore = useCallback(async (topic) => {
     try {
@@ -63,20 +71,29 @@ export default function Knowledge() {
     } catch { setCoreFiles([]); }
   }, []);
 
-  const loadHighFreq = useCallback(async (topic) => {
-    try {
-      const data = await getHighFreq(topic);
-      setHighFreq(data.content || "");
-      setHighFreqDraft(data.content || "");
-      setHfEditing(false);
-    } catch { setHighFreq(""); setHighFreqDraft(""); setHfEditing(false); }
-  }, []);
-
   useEffect(() => {
     if (!selected) return;
-    loadCore(selected);
-    loadHighFreq(selected);
-  }, [selected, loadCore, loadHighFreq]);
+    let active = true;
+    Promise.all([getCoreKnowledge(selected), getHighFreq(selected)])
+      .then(([files, highFreqData]) => {
+        if (!active) return;
+        setCoreFiles(files);
+        setExpandedFile(files[0]?.filename ?? null);
+        setCoreEditing(null);
+        setEditContent(Object.fromEntries(files.map((file) => [file.filename, file.content])));
+        setHighFreq(highFreqData.content || "");
+        setHighFreqDraft(highFreqData.content || "");
+        setHfEditing(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setCoreFiles([]);
+        setHighFreq("");
+        setHighFreqDraft("");
+        setHfEditing(false);
+      });
+    return () => { active = false; };
+  }, [selected]);
 
   const handleSaveCore = async (filename) => {
     setCoreSaving(filename);

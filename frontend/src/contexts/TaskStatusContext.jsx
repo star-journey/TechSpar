@@ -1,7 +1,6 @@
-import { createContext, useContext, useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { getTaskStatus } from "../api/interview";
-
-const TaskStatusContext = createContext(null);
+import TaskStatusContext from "./TaskStatusContextBase";
 
 const POLL_INTERVAL = 3000;
 
@@ -51,8 +50,4 @@ export function TaskStatusProvider({ children }) {
       {children}
     </TaskStatusContext.Provider>
   );
-}
-
-export function useTaskStatus() {
-  return useContext(TaskStatusContext);
 }

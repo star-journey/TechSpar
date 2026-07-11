@@ -5,7 +5,7 @@ import {
   Target, FileText, Settings as SettingsIcon,
   Sun, Moon, LogOut, Menu, X, ChevronLeft, ChevronRight,
 } from "lucide-react";
-import { useAuth } from "../contexts/AuthContext";
+import useAuth from "../hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -35,8 +35,9 @@ export default function Sidebar() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "dark");
-  const [open, setOpen] = useState(false);
+  const [openPath, setOpenPath] = useState(null);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "true");
+  const open = openPath === location.pathname;
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -44,8 +45,6 @@ export default function Sidebar() {
   }, [theme]);
 
   useEffect(() => { localStorage.setItem("sidebar-collapsed", collapsed); }, [collapsed]);
-
-  useEffect(() => { setOpen(false); }, [location.pathname]);
 
   const toggleTheme = () => setTheme(t => t === "dark" ? "light" : "dark");
   const isActive = (path) =>
@@ -60,7 +59,7 @@ export default function Sidebar() {
     const active = isActive(path);
     const btn = (
       <button
-        onClick={() => navigate(path)}
+        onClick={() => { setOpenPath(null); navigate(path); }}
         className={cn(
           "flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-[13px] transition-all duration-300 text-left group relative overflow-hidden",
           active
@@ -168,11 +167,11 @@ export default function Sidebar() {
   return (
     <>
       <div className="md:hidden flex items-center justify-between px-4 py-3 bg-card border-b border-border shrink-0">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => navigate("/")}>
+        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => { setOpenPath(null); navigate("/"); }}>
           <Logo className="w-7 h-7 rounded-lg drop-shadow-sm" />
           <span className="text-base font-display font-bold text-text translate-y-[1px]">TechSpar</span>
         </div>
-        <Button variant="ghost" size="icon" onClick={() => setOpen(o => !o)}>
+        <Button variant="ghost" size="icon" onClick={() => setOpenPath(open ? null : location.pathname)}>
           {open ? <X size={18} /> : <Menu size={18} />}
         </Button>
       </div>
@@ -182,7 +181,7 @@ export default function Sidebar() {
       {open && (
         <div className="fixed inset-0 z-50 md:hidden flex">
           <div className="animate-fade-in">{nav}</div>
-          <div className="flex-1 bg-black/50 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <div className="flex-1 bg-black/50 backdrop-blur-sm" onClick={() => setOpenPath(null)} />
         </div>
       )}
     </>

@@ -178,6 +178,19 @@ def append_message(session_id: str, role: str, content: str, *, user_id: str):
     conn.close()
 
 
+def save_session_questions(session_id: str, questions: list[dict], *, user_id: str) -> bool:
+    """Persist questions generated after a session has already been created."""
+    conn = _get_conn()
+    cursor = conn.execute(
+        "UPDATE sessions SET questions = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE session_id = ? AND user_id = ?",
+        (json.dumps(questions, ensure_ascii=False), session_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
 def save_drill_answers(session_id: str, answers: list[dict], *, user_id: str):
     """Save drill answers into transcript as Q&A pairs."""
     conn = _get_conn()
@@ -354,6 +367,9 @@ def list_sessions(
     for r in rows:
         overall = json.loads(r["overall"] or "{}")
         meta = json.loads(r["meta"] or "{}")
+        # Recording source transcripts can be very large and are only needed when
+        # retrying a specific session, not in the paginated history summary.
+        meta.pop("source_transcript", None)
         items.append({
             "session_id": r["session_id"],
             "mode": r["mode"],

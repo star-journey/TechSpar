@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { Check, Minus, Star } from "lucide-react";
 import ChatBubble from "../components/ChatBubble";
 import { sendMessage, sendMessageStream, endInterview, retryReview, getResumableSession, saveDraftAnswers } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import useVoiceInput from "../hooks/useVoiceInput";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -57,9 +57,11 @@ export default function Interview() {
 
   useEffect(() => {
     // Fresh start from a landing page → location.state carries everything.
-    if (location.state) {
-      if (!isBatchMode && location.state.message) {
-        setMessages([{ role: "assistant", content: location.state.message }]);
+    const routeState = location.state;
+    if (routeState) {
+      const routeIsBatch = routeState.mode === "topic_drill" || routeState.mode === "jd_prep";
+      if (!routeIsBatch && routeState.message) {
+        setMessages([{ role: "assistant", content: routeState.message }]);
       }
       return;
     }
@@ -112,7 +114,8 @@ export default function Interview() {
         // so the UI polls to "done" without needing the user to click anything.
         if (data.status === "reviewing") {
           const type = data.mode === "resume" ? "resume_review"
-            : data.mode === "jd_prep" ? "jd_review" : "drill_review";
+            : data.mode === "jd_prep" ? "jd_review"
+              : data.mode === "recording" ? "recording" : "drill_review";
           startTask(sessionId, type, "复盘生成中");
         }
       } catch (err) {
@@ -120,7 +123,7 @@ export default function Interview() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [location.state, sessionId, startTask]);
 
   useEffect(() => {
     if (!isBatchMode) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });

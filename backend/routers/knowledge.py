@@ -8,8 +8,25 @@ from backend.config import settings
 from backend.graph import build_graph
 from backend.indexer import invalidate_topic, load_topics
 from backend.llm_provider import get_langchain_llm
+from backend.utils import resolve_path_within, safe_child_path
 
 router = APIRouter(prefix="/api")
+
+
+def _topic_dir(topic_data: dict, user_id: str):
+    root = settings.user_knowledge_path(user_id)
+    directory = str(topic_data.get("dir") or "")
+    try:
+        return resolve_path_within(root, directory)
+    except ValueError:
+        raise HTTPException(400, "Invalid topic storage path")
+
+
+def _core_file(topic_dir, filename: str):
+    try:
+        return safe_child_path(topic_dir, filename)
+    except ValueError:
+        raise HTTPException(400, "Invalid knowledge filename")
 
 
 @router.get("/knowledge/{topic}/core")
@@ -19,7 +36,7 @@ async def get_core_knowledge(topic: str, user_id: str = Depends(get_current_user
     if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
 
-    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
+    topic_dir = _topic_dir(topics[topic], user_id)
     if not topic_dir.exists():
         return []
 
@@ -41,7 +58,7 @@ async def update_core_knowledge(
     if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
 
-    filepath = settings.user_knowledge_path(user_id) / topics[topic]["dir"] / filename
+    filepath = _core_file(_topic_dir(topics[topic], user_id), filename)
     if not filepath.exists():
         raise HTTPException(404, f"File not found: {filename}")
 
@@ -61,7 +78,7 @@ async def delete_core_knowledge(
     if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
 
-    filepath = settings.user_knowledge_path(user_id) / topics[topic]["dir"] / filename
+    filepath = _core_file(_topic_dir(topics[topic], user_id), filename)
     if not filepath.exists():
         raise HTTPException(404, f"File not found: {filename}")
 
@@ -81,9 +98,9 @@ async def create_core_knowledge(topic: str, body: dict, user_id: str = Depends(g
     if not filename or not filename.endswith(".md"):
         raise HTTPException(400, "Filename must end with .md")
 
-    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
+    topic_dir = _topic_dir(topics[topic], user_id)
     topic_dir.mkdir(parents=True, exist_ok=True)
-    filepath = topic_dir / filename
+    filepath = _core_file(topic_dir, filename)
     if filepath.exists():
         raise HTTPException(409, f"File already exists: {filename}")
 
@@ -117,7 +134,7 @@ async def generate_core_knowledge(topic: str, user_id: str = Depends(get_current
     ])
     content = response.content.strip()
 
-    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
+    topic_dir = _topic_dir(topics[topic], user_id)
     topic_dir.mkdir(parents=True, exist_ok=True)
     readme = topic_dir / "README.md"
     readme.write_text(content, encoding="utf-8")

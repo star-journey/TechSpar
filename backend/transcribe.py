@@ -141,7 +141,7 @@ def transcribe_long(audio_bytes: bytes, suffix: str = ".webm") -> str:
         "parameters": {"channel_id": [0]},
     }
 
-    resp = requests.post(_DASHSCOPE_SUBMIT, headers=headers, json=payload)
+    resp = requests.post(_DASHSCOPE_SUBMIT, headers=headers, json=payload, timeout=60)
     if resp.status_code != 200:
         raise RuntimeError(f"Transcription submit failed: {resp.text}")
 
@@ -151,7 +151,7 @@ def transcribe_long(audio_bytes: bytes, suffix: str = ".webm") -> str:
     query_headers = {"Authorization": f"Bearer {api_key}"}
     for _ in range(300):
         time.sleep(3)
-        qr = requests.get(_DASHSCOPE_QUERY + task_id, headers=query_headers)
+        qr = requests.get(_DASHSCOPE_QUERY + task_id, headers=query_headers, timeout=30)
         output = qr.json().get("output", {})
         status = output.get("task_status", "").upper()
 
@@ -179,7 +179,7 @@ def _extract_text(output: dict) -> str:
     if not url:
         return ""
 
-    resp = requests.get(url)
+    resp = requests.get(url, timeout=60)
     if resp.status_code != 200:
         return ""
 

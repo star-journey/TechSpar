@@ -76,19 +76,48 @@ def _filter_tar_member(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 
 
 def _export_filtered_db(user_id: str, dst: Path) -> None:
-    """生成只含指定 user_id 行的 DB 副本。
+    """生成只含当前用户 sessions 表的最小数据库。
 
-    用 closing() 显式关闭：sqlite3 的 with 语法只 commit/rollback、不 close，
-    Windows 上未关闭的连接持有文件锁，会让后续 tmp_db.unlink() 失败。
+    interviews.db 也承载 users、memory_vectors、copilot_preps 等全局表，不能先
+    backup 整库再只过滤 sessions，否则用户下载的归档会包含其他账户的数据。
+    HTTP/用户级导入只消费 sessions，因此这里显式按白名单复制这一张表。
     """
     src_path = _db_path()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+
     with closing(sqlite3.connect(str(src_path))) as src, \
          closing(sqlite3.connect(str(dst))) as dst_conn:
-        src.backup(dst_conn)
-        dst_conn.execute("DELETE FROM sessions WHERE user_id != ?", (user_id,))
+        dst_conn.execute(_SESSIONS_DDL)
+
+        src_cols = [row[1] for row in src.execute("PRAGMA table_info(sessions)")]
+        dst_cols = {row[1] for row in dst_conn.execute("PRAGMA table_info(sessions)")}
+        common = [column for column in src_cols if column in dst_cols]
+        if "session_id" not in common or "user_id" not in common:
+            raise RuntimeError("sessions 表缺少 session_id/user_id，无法安全导出")
+
+        columns = ", ".join(common)
+        placeholders = ", ".join("?" for _ in common)
+        rows = src.execute(
+            f"SELECT {columns} FROM sessions WHERE user_id = ?", (user_id,)
+        ).fetchall()
+        if rows:
+            dst_conn.executemany(
+                f"INSERT INTO sessions ({columns}) VALUES ({placeholders})", rows
+            )
         dst_conn.commit()
-    with closing(sqlite3.connect(str(dst))) as dst_conn:
         dst_conn.execute("VACUUM")
+
+
+def _export_full_db(dst: Path) -> None:
+    """Create a transactionally consistent snapshot of the complete live DB."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    with closing(sqlite3.connect(str(_db_path()))) as src, \
+         closing(sqlite3.connect(str(dst))) as dst_conn:
+        src.backup(dst_conn)
 
 
 def export_archive(
@@ -115,10 +144,13 @@ def export_archive(
 
     tmp_db: Path | None = None
     db_source = _db_path()
-    if user_id and db_source.exists():
+    if db_source.exists():
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         tmp_db = output_path.parent / f".techspar-export-{ts}.db"
-        _export_filtered_db(user_id, tmp_db)
+        if user_id:
+            _export_filtered_db(user_id, tmp_db)
+        else:
+            _export_full_db(tmp_db)
         db_source = tmp_db
 
     try:
@@ -151,8 +183,10 @@ def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
     dest_resolved = dest.resolve()
     for member in tar.getmembers():
         target = (dest / member.name).resolve()
-        if not str(target).startswith(str(dest_resolved)):
+        if not target.is_relative_to(dest_resolved):
             raise RuntimeError(f"archive 包含越界路径: {member.name}")
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"archive 不允许链接条目: {member.name}")
     try:
         tar.extractall(dest, filter="data")
     except TypeError:
@@ -266,12 +300,14 @@ def import_archive(
     db_strategy: str = "skip",
     overwrite_files: bool = False,
     rebind_user_id: str | None = None,
+    require_personal_archive: bool = False,
 ) -> ImportResult:
     """导入 export_archive 生成的 tar.gz。
 
     db_strategy: session_id 冲突时 'skip' 保留本地，'overwrite' 用归档覆盖。
     overwrite_files: 文件冲突时是否覆盖本地。
     rebind_user_id: HTTP 入口必传——把归档数据归到该 user_id。
+    require_personal_archive: 仅接受 manifest.user_id 非空的单账户归档。
     """
     if db_strategy not in {"skip", "overwrite"}:
         raise ValueError("db_strategy 必须是 'skip' 或 'overwrite'")
@@ -288,12 +324,18 @@ def import_archive(
             _safe_extract(tar, td)
 
         manifest_path = td / "manifest.json"
+        manifest = None
         if manifest_path.exists():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 result.schema_version = manifest.get("schema_version")
             except json.JSONDecodeError:
-                pass
+                manifest = None
+
+        if require_personal_archive:
+            source_user_id = manifest.get("user_id") if isinstance(manifest, dict) else None
+            if not isinstance(source_user_id, str) or not source_user_id.strip():
+                raise ValueError("仅支持带 user_id 的单账户备份，不能导入整站全量归档")
 
         data_dir = _data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)

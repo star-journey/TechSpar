@@ -98,20 +98,6 @@ def get_prep(prep_id: str, user_id: str) -> dict | None:
     return data
 
 
-def get_prep_by_id(prep_id: str) -> dict | None:
-    """按 prep_id 查询，不校验 user_id（内部使用）。"""
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM copilot_preps WHERE prep_id=?", (prep_id,)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    data = dict(row)
-    data["result"] = json.loads(data["result"]) if data.get("result") else None
-    return data
-
-
 def list_preps(user_id: str) -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(

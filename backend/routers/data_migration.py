@@ -1,10 +1,10 @@
-"""数据迁移端点：导出/导入当前登录用户的数据。
+"""数据迁移端点：管理员全量导出 + 当前账户个人导入。
 
 与 CLI (scripts/export_data.py、scripts/import_data.py) 共用
 backend.storage.data_migration 中的核心实现。
 
-HTTP 入口始终把数据归到当前登录用户（rebind_user_id=user_id），防止
-跨用户写入或泄露。
+导出仅管理员可用并一次性包含整个 data/。导入接受单账户归档，并始终把
+数据归到当前登录用户（rebind_user_id=user_id）。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, is_admin_user
 from backend.storage.data_migration import (
     SCHEMA_VERSION,
     export_archive,
@@ -39,13 +39,16 @@ def export_data(
     background: BackgroundTasks,
     user_id: str = Depends(get_current_user),
 ):
-    """以 tar.gz 形式返回当前用户的全部数据。"""
+    """管理员下载整站全量 tar.gz 备份。"""
+    if not is_admin_user(user_id):
+        raise HTTPException(403, "Only administrators can export system data")
+
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     tmp_dir = Path(tempfile.mkdtemp(prefix="techspar-export-"))
     archive_path = tmp_dir / f"techspar-backup-{ts}.tar.gz"
 
     try:
-        export_archive(archive_path, user_id=user_id)
+        export_archive(archive_path)
     except FileNotFoundError as e:
         _cleanup_dir(tmp_dir)
         raise HTTPException(500, str(e))
@@ -70,7 +73,7 @@ async def import_data(
     overwrite_files: bool = Form(False),
     user_id: str = Depends(get_current_user),
 ):
-    """导入上传的备份归档。所有数据归到当前登录用户。"""
+    """导入单账户备份归档。所有数据归到当前登录用户。"""
     if db_strategy not in {"skip", "overwrite"}:
         raise HTTPException(400, "db_strategy 必须是 'skip' 或 'overwrite'")
 
@@ -99,6 +102,7 @@ async def import_data(
                 db_strategy=db_strategy,
                 overwrite_files=overwrite_files,
                 rebind_user_id=user_id,
+                require_personal_archive=True,
             )
         except (RuntimeError, ValueError) as e:
             raise HTTPException(400, f"归档解析失败: {e}")

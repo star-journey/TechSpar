@@ -22,6 +22,7 @@ export default function useCopilotStream({ prepId, onUpdate } = {}) {
   const reconnectTimer = useRef(null);
   const sessionIdRef = useRef(null);
   const manualClose = useRef(false);
+  const connectRef = useRef(null);
 
   useEffect(() => { onUpdateRef.current = onUpdate; }, [onUpdate]);
 
@@ -30,9 +31,9 @@ export default function useCopilotStream({ prepId, onUpdate } = {}) {
     clearTimeout(reconnectTimer.current);
     reconnectTimer.current = setTimeout(() => {
       console.log("[Copilot WS] reconnecting...");
-      connect(sessionIdRef.current);
+      connectRef.current?.(sessionIdRef.current);
     }, 2000);
-  }, []);  // connect added below via circular ref — safe because scheduleReconnect only reads it
+  }, []);
 
   /** 建立 WebSocket 连接 */
   const connect = useCallback((sessionId) => {
@@ -98,6 +99,10 @@ export default function useCopilotStream({ prepId, onUpdate } = {}) {
 
     wsRef.current = ws;
   }, [prepId, scheduleReconnect]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   /** 开始录音并推流 PCM */
   const startListening = useCallback(async () => {

@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { getTopicIcon } from "../utils/topicIcons";
 import { getProfile, getTopicHistory, getTopicRetrospective, getTopics } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

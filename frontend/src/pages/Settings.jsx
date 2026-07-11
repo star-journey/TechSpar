@@ -1247,16 +1247,19 @@ export default function Settings() {
               <span className="text-base font-semibold">数据迁移</span>
             </div>
             <div className="text-[13px] text-dim mb-5">
-              备份与跨机器迁移面试历史、复盘、画像、简历、知识库、题库与训练偏好。LLM/声纹凭据等环境配置不在此范围。
+              {isAdmin
+                ? "管理员可导出整站全量备份；所有账户都可把单账户备份导入当前账户。全量备份包含数据库、用户文件和已保存的服务凭据，请妥善保管。"
+                : "可把单账户备份导入当前账户。归档中的会话和用户文件会重绑定到当前登录账户。"}
             </div>
 
             <div className="space-y-5">
               {/* Export */}
+              {isAdmin && (
               <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div>
-                    <div className="text-sm font-medium mb-0.5">导出当前账户数据</div>
-                    <div className="text-[12px] text-dim/70">打包为 .tar.gz 下载到本地</div>
+                    <div className="text-sm font-medium mb-0.5">导出整站全量数据</div>
+                    <div className="text-[12px] text-dim/70">一次性打包全部账户和数据库为 .tar.gz</div>
                   </div>
                   <Button variant="outline" disabled={exporting} onClick={handleExport}>
                     {exporting ? (
@@ -1268,12 +1271,13 @@ export default function Settings() {
                   </Button>
                 </div>
               </div>
+              )}
 
               {/* Import */}
               <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 space-y-4">
                 <div>
                   <div className="text-sm font-medium mb-0.5">从备份导入</div>
-                  <div className="text-[12px] text-dim/70">归档中的数据将归到当前登录账户</div>
+                  <div className="text-[12px] text-dim/70">仅支持单账户备份，归档数据将归到当前登录账户</div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
