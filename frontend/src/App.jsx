@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { AuthProvider } from "./contexts/AuthContext";
 import { TaskStatusProvider } from "./contexts/TaskStatusContext";
+import useAuth from "./hooks/useAuth";
 import Sidebar from "./components/Sidebar";
 import TaskNotification from "./components/TaskNotification";
 import ErrorBoundary from "./components/ErrorBoundary";

@@ -642,7 +642,11 @@ export default function Review() {
           if (tc) setTopicsCovered(tc);
           if (data.meta) setMeta(data.meta);
           if (data.reference_answers) setReferenceAnswers(data.reference_answers);
-          if (data.mode === "topic_drill" || data.mode === "jd_prep") {
+          if (
+            data.mode === "topic_drill"
+            || data.mode === "jd_prep"
+            || (data.mode === "recording" && data.meta?.recording_mode === "dual")
+          ) {
             setAnswers(inferAnswers(data.questions || [], data.transcript || []));
           }
         })
@@ -669,7 +673,9 @@ export default function Review() {
   const currentMode = mode || stateData.mode;
   const isRecording = currentMode === "recording";
   const isJobPrep = currentMode === "jd_prep";
-  const isRecordingDual = isRecording && (stateData.recording_mode === "dual" || questions.length > 0);
+  const isRecordingDual = isRecording && (
+    stateData.recording_mode === "dual" || meta?.recording_mode === "dual" || questions.length > 0
+  );
   const showDrill = currentMode === "topic_drill" || isRecordingDual;
   const title = isRecording ? "录音复盘" : isJobPrep ? "JD 备面复盘" : showDrill ? "训练复盘" : "面试复盘";
 

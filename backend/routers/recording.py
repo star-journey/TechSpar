@@ -15,9 +15,11 @@ from backend.runtime import _task_status
 from backend.storage.sessions import (
     STATUS_REVIEW_FAILED,
     STATUS_REVIEWING,
+    append_message,
     create_session,
     save_drill_answers,
     save_review,
+    save_session_questions,
     update_session_status,
 )
 
@@ -104,10 +106,13 @@ def _analyze_recording_background(
                 f"### Q{question['id']} ({question.get('focus_area', '')})\n**题目**: {question['question']}\n**回答**: {answer['answer']}"
                 for question, answer in zip(questions, answers)
             ]
+            save_session_questions(session_id, questions, user_id=user_id)
+
             eval_prompt = RECORDING_DUAL_EVAL_PROMPT.format(
                 qa_pairs="\n\n".join(qa_lines),
                 profile_summary=profile_summary,
             )
+            eval_prompt += _recording_context(req_company, req_position)
             eval_response = invoke_with_retry(llm, [
                 SystemMessage(content="你是面试评估引擎。只返回 JSON，不要其他内容。"),
                 HumanMessage(content=eval_prompt),
@@ -133,6 +138,7 @@ def _analyze_recording_background(
                 transcript=req_transcript,
                 profile_summary=profile_summary,
             )
+            eval_prompt += _recording_context(req_company, req_position)
             response = invoke_with_retry(llm, [
                 SystemMessage(content="你是录音评估引擎。只返回 JSON，不要其他内容。"),
                 HumanMessage(content=eval_prompt),
@@ -161,18 +167,33 @@ def _analyze_recording_background(
                 overall, scores, max(len(scores), 1), user_id,
                 transcript=req_transcript, session_id=session_id,
             ))
-        except Exception:
-            logger.exception("Post-review profile update failed for recording session %s", session_id)
+        except Exception as exc:
+            # The review is already durable. Profile write-back is best effort and
+            # must not turn a usable report into a failed session.
+            logger.warning("Recording profile write-back failed for %s: %s", session_id, exc)
 
         _task_status[session_id] = {"status": "done", "type": "recording", "user_id": user_id}
         logger.info("Recording analysis done for session %s", session_id)
     except Exception as exc:
         update_session_status(
-            session_id, STATUS_REVIEW_FAILED,
-            user_id=user_id, review_error=str(exc)[:500] or "未知错误",
+            session_id,
+            STATUS_REVIEW_FAILED,
+            user_id=user_id,
+            review_error=str(exc)[:500] or "未知错误",
         )
         _task_status[session_id] = {"status": "error", "type": "recording", "user_id": user_id}
-        logger.error("Recording analysis failed for session %s: %s", session_id, exc)
+        logger.error("Recording analysis failed for session %s: %s", session_id, exc, exc_info=True)
+
+
+def _recording_context(company: str | None, position: str | None) -> str:
+    values = []
+    if company:
+        values.append(f"公司: {company.strip()}")
+    if position:
+        values.append(f"岗位: {position.strip()}")
+    if not values:
+        return ""
+    return "\n\n## 面试背景\n" + "\n".join(values)
 
 
 @router.post("/recording/analyze")
@@ -182,20 +203,18 @@ async def recording_analyze(
     user_id: str = Depends(get_current_user),
 ):
     """Analyze a recording transcript — async background processing."""
+    if not req.transcript.strip():
+        raise HTTPException(400, "Transcript must not be blank.")
+
     session_id = str(uuid.uuid4())
-    # Persist the raw inputs so a failed analysis can be regenerated from history
-    # (the retry path re-dispatches the background task from these).
-    create_session(
-        session_id,
-        mode="recording",
-        meta={
-            "transcript": req.transcript,
-            "recording_mode": req.recording_mode,
-            "company": req.company,
-            "position": req.position,
-        },
-        user_id=user_id,
-    )
+    meta = {
+        "recording_mode": req.recording_mode,
+        "company": (req.company or "").strip(),
+        "position": (req.position or "").strip(),
+        "source_transcript": req.transcript,
+    }
+    create_session(session_id, mode="recording", meta=meta, user_id=user_id)
+    append_message(session_id, "user", req.transcript, user_id=user_id)
     update_session_status(session_id, STATUS_REVIEWING, user_id=user_id)
 
     _task_status[session_id] = {"status": "pending", "type": "recording", "user_id": user_id}

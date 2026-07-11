@@ -1,0 +1,320 @@
+import asyncio
+import io
+import json
+import sqlite3
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from fastapi import BackgroundTasks, HTTPException
+
+from backend.config import settings
+from backend.routers import copilot, data_migration as migration_router, interview, recording
+from backend.runtime import _task_status
+from backend.storage import data_migration, sessions
+from backend.utils import safe_child_path
+
+
+class DataExportIsolationTests(unittest.TestCase):
+    def test_user_export_contains_only_their_sessions_table(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.db"
+            exported = root / "exported.db"
+
+            with sqlite3.connect(source) as conn:
+                conn.execute(data_migration._SESSIONS_DDL)
+                conn.execute(
+                    "INSERT INTO sessions (session_id, mode, user_id) VALUES (?, ?, ?)",
+                    ("mine", "recording", "user-a"),
+                )
+                conn.execute(
+                    "INSERT INTO sessions (session_id, mode, user_id) VALUES (?, ?, ?)",
+                    ("theirs", "resume", "user-b"),
+                )
+                conn.execute("CREATE TABLE users (id TEXT, email TEXT, password TEXT)")
+                conn.execute(
+                    "INSERT INTO users VALUES (?, ?, ?)",
+                    ("user-b", "other@example.com", "bcrypt-hash"),
+                )
+                conn.execute("CREATE TABLE memory_vectors (user_id TEXT, content TEXT)")
+                conn.execute(
+                    "INSERT INTO memory_vectors VALUES (?, ?)",
+                    ("user-b", "other user's resume"),
+                )
+
+            with patch.object(settings, "db_path", source):
+                data_migration._export_filtered_db("user-a", exported)
+
+            with sqlite3.connect(exported) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                rows = conn.execute(
+                    "SELECT session_id, user_id FROM sessions"
+                ).fetchall()
+
+            self.assertEqual(tables, {"sessions"})
+            self.assertEqual(rows, [("mine", "user-a")])
+
+    def test_full_export_snapshot_keeps_all_database_tables(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.db"
+            snapshot = Path(td) / "snapshot.db"
+            with sqlite3.connect(source) as conn:
+                conn.execute(data_migration._SESSIONS_DDL)
+                conn.execute("CREATE TABLE users (id TEXT, email TEXT)")
+                conn.execute("INSERT INTO users VALUES ('user-a', 'a@example.com')")
+
+            with patch.object(settings, "db_path", source):
+                data_migration._export_full_db(snapshot)
+
+            with sqlite3.connect(snapshot) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                users = conn.execute("SELECT * FROM users").fetchall()
+
+            self.assertEqual(tables, {"sessions", "users"})
+            self.assertEqual(users, [("user-a", "a@example.com")])
+
+    def test_http_export_requires_admin_and_requests_a_full_archive(self):
+        background = BackgroundTasks()
+        with patch.object(migration_router, "is_admin_user", return_value=False):
+            with self.assertRaisesRegex(HTTPException, "Only administrators") as raised:
+                migration_router.export_data(background, user_id="user-a")
+        self.assertEqual(raised.exception.status_code, 403)
+
+        created_dir = None
+
+        def fake_export(path, **kwargs):
+            nonlocal created_dir
+            self.assertEqual(kwargs, {})
+            created_dir = path.parent
+            path.write_bytes(b"archive")
+            return path
+
+        with (
+            patch.object(migration_router, "is_admin_user", return_value=True),
+            patch.object(migration_router, "export_archive", side_effect=fake_export),
+        ):
+            response = migration_router.export_data(
+                BackgroundTasks(), user_id="admin-user"
+            )
+
+        self.assertTrue(Path(response.path).exists())
+        if created_dir:
+            migration_router._cleanup_dir(created_dir)
+
+    def test_personal_import_rejects_a_full_system_archive(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "full.tar.gz"
+            manifest = json.dumps({
+                "schema_version": data_migration.SCHEMA_VERSION,
+                "user_id": None,
+            }).encode()
+            with tarfile.open(archive, "w:gz") as tar:
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(manifest)
+                tar.addfile(info, io.BytesIO(manifest))
+
+            with self.assertRaisesRegex(ValueError, "单账户备份"):
+                data_migration.import_archive(
+                    archive,
+                    rebind_user_id="user-a",
+                    require_personal_archive=True,
+                )
+
+
+class RecordingPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "recording.db"
+        self.db_patch = patch.object(sessions, "DB_PATH", self.db_path)
+        self.db_patch.start()
+        _task_status.clear()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _create_recording_session(session_id="rec-1"):
+        sessions.create_session(
+            session_id,
+            mode="recording",
+            meta={
+                "recording_mode": "dual",
+                "company": "Example Co",
+                "position": "Backend Engineer",
+                "source_transcript": "Interviewer: Q? Candidate: A.",
+            },
+            user_id="user-a",
+        )
+        sessions.append_message(
+            session_id,
+            "user",
+            "Interviewer: Q? Candidate: A.",
+            user_id="user-a",
+        )
+        sessions.update_session_status(
+            session_id, sessions.STATUS_REVIEWING, user_id="user-a"
+        )
+
+    def test_dual_recording_persists_questions_transcript_and_meta(self):
+        self._create_recording_session()
+
+        class FakeLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, _messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return SimpleNamespace(
+                        content=json.dumps({
+                            "qa_pairs": [{
+                                "id": 1,
+                                "question": "Q?",
+                                "answer": "A.",
+                                "focus_area": "Python",
+                            }]
+                        })
+                    )
+                return SimpleNamespace(
+                    content=json.dumps({
+                        "scores": [{"question_id": 1, "score": 8}],
+                        "overall": {"avg_score": 8, "summary": "Good"},
+                    })
+                )
+
+        async def no_behavior(*_args, **_kwargs):
+            return []
+
+        async def no_profile_update(*_args, **_kwargs):
+            return None
+
+        with (
+            patch("backend.llm_provider.get_langchain_llm", return_value=FakeLLM()),
+            patch("backend.memory.get_profile_summary", return_value=""),
+            patch.object(recording, "extract_behavior_ops", no_behavior),
+            patch.object(recording, "llm_update_profile", no_profile_update),
+        ):
+            recording._analyze_recording_background(
+                "rec-1",
+                "Interviewer: Q? Candidate: A.",
+                "dual",
+                "Example Co",
+                "Backend Engineer",
+                "user-a",
+            )
+
+        saved = sessions.get_session("rec-1", user_id="user-a")
+        self.assertEqual(saved["status"], sessions.STATUS_REVIEWED)
+        self.assertEqual(saved["questions"][0]["question"], "Q?")
+        self.assertEqual([item["role"] for item in saved["transcript"]], ["assistant", "user"])
+        self.assertEqual(saved["meta"]["recording_mode"], "dual")
+        self.assertEqual(saved["meta"]["company"], "Example Co")
+
+    def test_recording_failure_is_persisted_and_visible(self):
+        self._create_recording_session("rec-failed")
+
+        class FailingLLM:
+            def invoke(self, _messages):
+                raise RuntimeError("provider unavailable")
+
+        with (
+            patch("backend.llm_provider.get_langchain_llm", return_value=FailingLLM()),
+            patch("backend.memory.get_profile_summary", return_value=""),
+        ):
+            with self.assertLogs(recording.logger, level="ERROR"):
+                recording._analyze_recording_background(
+                    "rec-failed",
+                    "Interviewer: Q? Candidate: A.",
+                    "dual",
+                    None,
+                    None,
+                    "user-a",
+                )
+
+        saved = sessions.get_session("rec-failed", user_id="user-a")
+        history = sessions.list_sessions(user_id="user-a")
+        self.assertEqual(saved["status"], sessions.STATUS_REVIEW_FAILED)
+        self.assertIn("provider unavailable", saved["review_error"])
+        self.assertEqual(history["items"][0]["session_id"], "rec-failed")
+        self.assertNotIn("source_transcript", history["items"][0]["meta"])
+
+    def test_failed_recording_can_schedule_a_retry_from_persisted_input(self):
+        self._create_recording_session("rec-retry")
+        sessions.update_session_status(
+            "rec-retry",
+            sessions.STATUS_REVIEW_FAILED,
+            user_id="user-a",
+            review_error="first attempt failed",
+        )
+        saved = sessions.get_session("rec-retry", user_id="user-a")
+        background = BackgroundTasks()
+
+        result = interview._dispatch_review(
+            "rec-retry", saved, "user-a", background
+        )
+
+        retried = sessions.get_session("rec-retry", user_id="user-a")
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(retried["status"], sessions.STATUS_REVIEWING)
+        self.assertEqual(len(background.tasks), 1)
+
+
+class CopilotAuthorizationTests(unittest.TestCase):
+    def test_invalid_websocket_token_is_rejected_before_accept(self):
+        websocket = SimpleNamespace(
+            accept=AsyncMock(),
+            close=AsyncMock(),
+        )
+
+        asyncio.run(copilot.copilot_realtime_ws(websocket, "session-1", token="invalid"))
+
+        websocket.accept.assert_not_awaited()
+        websocket.close.assert_awaited_once_with(
+            code=1008, reason="Authentication required"
+        )
+
+    def test_prep_lookup_is_scoped_to_authenticated_user(self):
+        websocket = SimpleNamespace(send_json=AsyncMock())
+        with patch.object(copilot.prep_store, "get_prep", return_value=None) as get_prep:
+            with self.assertRaisesRegex(ValueError, "Prep session not ready"):
+                asyncio.run(
+                    copilot._init_copilot_session(
+                        websocket,
+                        "prep-1",
+                        "session-1",
+                        user_id="user-a",
+                    )
+                )
+        get_prep.assert_called_once_with("prep-1", "user-a")
+
+
+class SafePathTests(unittest.TestCase):
+    def test_child_path_rejects_traversal_and_absolute_names(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(
+                safe_child_path(root, "resume.pdf"), root.resolve() / "resume.pdf"
+            )
+            with self.assertRaises(ValueError):
+                safe_child_path(root, "../resume.pdf")
+            with self.assertRaises(ValueError):
+                safe_child_path(root, str(root / "resume.pdf"))
+
+
+if __name__ == "__main__":
+    unittest.main()

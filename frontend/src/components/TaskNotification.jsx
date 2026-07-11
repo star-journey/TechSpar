@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { X, Loader2, FileText, AlertCircle } from "lucide-react";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 
 function getNavTarget(task) {
   if (task.type === "retrospective" && task.result?.topic) {

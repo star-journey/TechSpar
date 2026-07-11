@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.graph import add_messages
 
@@ -86,10 +86,10 @@ class EndDrillRequest(BaseModel):
 
 
 class RecordingAnalyzeRequest(BaseModel):
-    transcript: str
-    recording_mode: str = "dual"  # "dual" | "solo"
-    company: str | None = None
-    position: str | None = None
+    transcript: str = Field(min_length=1)
+    recording_mode: Literal["dual", "solo"] = "dual"
+    company: str | None = Field(default=None, max_length=200)
+    position: str | None = Field(default=None, max_length=200)
 
 
 # ── Auth Models ──

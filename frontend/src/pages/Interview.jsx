@@ -11,7 +11,7 @@ import {
   saveAnswersDraft,
   retryReview,
 } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import useVoiceInput from "../hooks/useVoiceInput";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -136,7 +136,8 @@ export default function Interview() {
 
         if (data.status === "reviewing") {
           const type = data.mode === "resume" ? "resume_review"
-            : data.mode === "jd_prep" ? "jd_review" : "drill_review";
+            : data.mode === "jd_prep" ? "jd_review"
+              : data.mode === "recording" ? "recording" : "drill_review";
           startTask(sessionId, type, "复盘生成中");
         }
       } catch (err) {
@@ -153,7 +154,7 @@ export default function Interview() {
     })();
 
     return () => { cancelled = true; };
-  }, []);
+  }, [location.state, sessionId, startTask]);
 
   useEffect(() => {
     if (!isBatchMode) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });

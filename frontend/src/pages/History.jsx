@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, CalendarDays, ChevronRight, CircleAlert, CircleCheck, Filter, Hash, LoaderCircle, Play, RotateCw, Trash2 } from "lucide-react";
 import { getHistory, deleteSession, getInterviewTopics, retryReview } from "../api/interview";
-import { useTaskStatus } from "../contexts/TaskStatusContext";
+import useTaskStatus from "../hooks/useTaskStatus";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

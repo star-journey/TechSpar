@@ -33,6 +33,25 @@ async def get_task_status(task_id: str, user_id: str = Depends(get_current_user)
     task = _task_status.get(task_id)
     if task and task.get("user_id") not in (None, user_id):
         raise HTTPException(404, "Task not found.")
+    session = get_session(task_id, user_id=user_id)
+    owns_retrospective = bool(
+        task
+        and task.get("type") == "retrospective"
+        and task_id.endswith(f"_{user_id[:8]}")
+    )
+    owns_runtime_task = bool(task and task.get("user_id") == user_id)
+    if not session and not owns_runtime_task and not owns_retrospective:
+        raise HTTPException(404, "Task not found.")
+
+    if not task or task.get("status") not in ("done", "error"):
+        expire_stale_reviewing(user_id=user_id)
+        session = get_session(task_id, user_id=user_id)
+        if session and session["status"] == STATUS_REVIEWED:
+            return {"task_id": task_id, "status": "done"}
+        if session and session["status"] == STATUS_REVIEW_FAILED:
+            return {"task_id": task_id, "status": "error", "error": session.get("review_error")}
+    if not task:
+        raise HTTPException(404, "Task not found.")
     if task and task.get("status") in ("done", "error"):
         public_task = {key: value for key, value in task.items() if key != "user_id"}
         return {"task_id": task_id, **public_task}
