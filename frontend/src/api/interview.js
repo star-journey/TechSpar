@@ -113,6 +113,24 @@ export async function inferTargetRole() {
   return res.json();
 }
 
+// Poll an async JD-prep job (analyze / start) until it reaches a terminal state.
+// Resolves with the terminal payload (job-specific result fields merged in) or
+// throws with the backend's message. This is what sidesteps the proxy read
+// timeouts (host nginx / Cloudflare): no single request is held open for the
+// long LLM call — the kickoff returns instantly and we poll a cheap status route.
+async function pollJobPrepJob(jobId, { intervalMs = 1500, timeoutMs = 300000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const res = await authFetch(`${API_BASE}/job-prep/job/${jobId}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (data.status === "done") return data;
+    if (data.status === "error") throw new Error(data.error || "分析失败，请重试。");
+    if (Date.now() > deadline) throw new Error("分析超时，请稍后重试。");
+  }
+}
+
 export async function previewJobPrep(payload) {
   const res = await authFetch(`${API_BASE}/job-prep/preview`, {
     method: "POST",
@@ -120,7 +138,9 @@ export async function previewJobPrep(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const { job_id } = await res.json();
+  const data = await pollJobPrepJob(job_id);
+  return { preview: data.preview };
 }
 
 export async function startJobPrep(payload) {
@@ -130,7 +150,13 @@ export async function startJobPrep(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const { job_id } = await res.json();
+  // Strip poll-control fields so the shape matches the original endpoint exactly
+  // (this payload becomes the interview page's navigation state).
+  const data = await pollJobPrepJob(job_id);
+  delete data.status;
+  delete data.error;
+  return data;
 }
 
 export async function sendMessage(sessionId, message) {

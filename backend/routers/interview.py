@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -33,6 +34,7 @@ from backend.review_formatters import format_drill_review, format_job_prep_revie
 from backend.runtime import (
     _drill_sessions,
     _graphs,
+    _job_prep_jobs,
     _job_prep_sessions,
     _task_status,
     get_or_restore_batch_session,
@@ -90,14 +92,70 @@ def _session_response(session: dict) -> dict:
     }
 
 
-@router.post("/job-prep/preview")
-def job_prep_preview(req: JobPrepPreviewRequest, user_id: str = Depends(get_current_user)):
-    """Analyze a JD and candidate fit before starting targeted practice."""
-    jd_text = req.jd_text.strip()
-    if len(jd_text) < 50:
-        raise HTTPException(400, "JD 内容太短，无法分析。")
+_JOB_PREP_JOB_TTL = 3600  # seconds — bound memory for finished/abandoned async jobs
 
-    try:
+
+def _prune_job_prep_jobs() -> None:
+    """Drop async job entries older than the TTL so the in-memory map stays bounded."""
+    now = time.time()
+    stale = [k for k, v in _job_prep_jobs.items() if now - v.get("created_at", now) > _JOB_PREP_JOB_TTL]
+    for job_id in stale:
+        _job_prep_jobs.pop(job_id, None)
+
+
+def _finish_job(job_id: str, result: dict) -> None:
+    entry = _job_prep_jobs.get(job_id)
+    if entry is not None:
+        entry["status"] = "done"
+        entry["result"] = result
+
+
+def _fail_job(job_id: str, message: str) -> None:
+    entry = _job_prep_jobs.get(job_id)
+    if entry is not None:
+        entry["status"] = "error"
+        entry["error"] = message
+
+
+def _start_job_prep_job(kind: str, user_id: str, work, background_tasks: BackgroundTasks) -> str:
+    """Register an async JD-prep job and run `work` off-request, returning its id.
+
+    `work` is a zero-arg callable returning the dict merged into the poll payload
+    on success. It stays synchronous on purpose: the LLM calls block, so Starlette
+    runs it in its threadpool and the event loop stays free to serve status polls.
+    """
+    _prune_job_prep_jobs()
+    job_id = uuid.uuid4().hex[:12]
+    _job_prep_jobs[job_id] = {
+        "kind": kind,
+        "status": "running",
+        "user_id": user_id,
+        "result": None,
+        "error": "",
+        "created_at": time.time(),
+    }
+
+    def _run() -> None:
+        try:
+            result = work()
+        except RuntimeError as exc:
+            # Expected, retryable LLM-shape failures carry a user-facing message.
+            logger.warning("JD-prep %s job rejected: %s", kind, exc)
+            _fail_job(job_id, str(exc))
+        except Exception as exc:  # noqa: BLE001 — surface a clean message, log the rest
+            logger.error("JD-prep %s job failed: %s", kind, exc, exc_info=True)
+            _fail_job(job_id, "分析失败，请稍后重试。")
+        else:
+            _finish_job(job_id, result)
+
+    background_tasks.add_task(_run)
+    return job_id
+
+
+def _build_job_prep_session(req: JobPrepStartRequest, jd_text: str, user_id: str) -> dict:
+    """Run JD-prep session creation: the slow LLM work plus persistence."""
+    preview = req.preview_data if isinstance(req.preview_data, dict) else None
+    if not preview:
         preview = generate_job_prep_preview(
             jd_text,
             user_id,
@@ -105,41 +163,13 @@ def job_prep_preview(req: JobPrepPreviewRequest, user_id: str = Depends(get_curr
             position=req.position,
             use_resume=req.use_resume,
         )
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc))
 
-    return {"preview": preview}
-
-
-@router.post("/job-prep/start")
-def job_prep_start(req: JobPrepStartRequest, user_id: str = Depends(get_current_user)):
-    """Start a JD-targeted mock interview session."""
-    jd_text = req.jd_text.strip()
-    if len(jd_text) < 50:
-        raise HTTPException(400, "JD 内容太短，无法生成训练。")
-
-    preview = req.preview_data if isinstance(req.preview_data, dict) else None
-    if not preview:
-        try:
-            preview = generate_job_prep_preview(
-                jd_text,
-                user_id,
-                company=req.company,
-                position=req.position,
-                use_resume=req.use_resume,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(500, str(exc))
-
-    try:
-        questions = generate_job_prep_questions(
-            jd_text,
-            preview,
-            user_id,
-            use_resume=req.use_resume,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc))
+    questions = generate_job_prep_questions(
+        jd_text,
+        preview,
+        user_id,
+        use_resume=req.use_resume,
+    )
 
     session_id = str(uuid.uuid4())[:8]
     meta = {
@@ -173,6 +203,73 @@ def job_prep_start(req: JobPrepStartRequest, user_id: str = Depends(get_current_
         "position": meta["position"],
         "meta": meta,
     }
+
+
+@router.post("/job-prep/preview")
+async def job_prep_preview(
+    req: JobPrepPreviewRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
+    """Kick off async JD analysis; returns a job id the client polls.
+
+    Analysis is a single large LLM call that routinely runs longer than upstream
+    proxy read timeouts (host nginx / Cloudflare ~60-100s). Running it inline
+    surfaced as a 504, so we return immediately and let the client poll
+    `/job-prep/job/{job_id}`.
+    """
+    jd_text = req.jd_text.strip()
+    if len(jd_text) < 50:
+        raise HTTPException(400, "JD 内容太短，无法分析。")
+
+    def _work() -> dict:
+        return {
+            "preview": generate_job_prep_preview(
+                jd_text,
+                user_id,
+                company=req.company,
+                position=req.position,
+                use_resume=req.use_resume,
+            )
+        }
+
+    job_id = _start_job_prep_job("preview", user_id, _work, background_tasks)
+    return {"job_id": job_id}
+
+
+@router.post("/job-prep/start")
+async def job_prep_start(
+    req: JobPrepStartRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
+    """Kick off async JD session creation; returns a job id the client polls.
+
+    Shares the timeout profile of `/job-prep/preview` (one or two LLM calls),
+    so it runs off-request the same way.
+    """
+    jd_text = req.jd_text.strip()
+    if len(jd_text) < 50:
+        raise HTTPException(400, "JD 内容太短，无法生成训练。")
+
+    def _work() -> dict:
+        return _build_job_prep_session(req, jd_text, user_id)
+
+    job_id = _start_job_prep_job("start", user_id, _work, background_tasks)
+    return {"job_id": job_id}
+
+
+@router.get("/job-prep/job/{job_id}")
+async def job_prep_job_status(job_id: str, user_id: str = Depends(get_current_user)):
+    """Poll an async JD-prep job. On `done`, the job's result is merged into the payload."""
+    entry = _job_prep_jobs.get(job_id)
+    if not entry or entry.get("user_id") != user_id:
+        raise HTTPException(404, "任务不存在或已过期，请重试。")
+
+    resp = {"status": entry["status"], "error": entry.get("error", "")}
+    if entry["status"] == "done" and entry.get("result"):
+        resp.update(entry["result"])
+    return resp
 
 
 @router.post("/interview/start")
