@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 import uuid
 
@@ -20,6 +21,7 @@ from backend.graphs.job_prep import (
 from backend.graphs.review import generate_review
 from backend.graphs.topic_drill import evaluate_drill_answers, generate_drill_questions
 from backend.indexer import load_topics
+from backend.llm_provider import ProviderNotConfigured
 from backend.memory import extract_behavior_ops, get_profile, llm_update_profile, update_profile_after_interview, update_target_role
 from backend.models import (
     ChatRequest,
@@ -321,21 +323,34 @@ async def start_interview(
 
         await update_target_role(user_id, target_role)
 
-        graph = compile_resume_interview(user_id)
         config = {"configurable": {"thread_id": session_id}}
-        result = await graph.ainvoke({"target_role": target_role}, config)
+        try:
+            # 启动会调 LLM/Embedding，并往 sqlite 写会话与 langgraph checkpoint。
+            # 任一失败(模型报错 / 磁盘写满 / OOM 连接中断)都在这里兜住，
+            # 返回可读原因，而不是裸奔成一句 Internal Server Error。
+            graph = compile_resume_interview(user_id)
+            result = await graph.ainvoke({"target_role": target_role}, config)
 
-        ai_message = ""
-        for msg in reversed(result["messages"]):
-            if isinstance(msg, AIMessage):
-                ai_message = msg.content
-                break
+            ai_message = ""
+            for msg in reversed(result["messages"]):
+                if isinstance(msg, AIMessage):
+                    ai_message = msg.content
+                    break
 
-        create_session(
-            session_id, req.mode.value, req.topic,
-            meta={"target_role": target_role}, user_id=user_id,
-        )
-        append_message(session_id, "assistant", ai_message, user_id=user_id)
+            create_session(
+                session_id, req.mode.value, req.topic,
+                meta={"target_role": target_role}, user_id=user_id,
+            )
+            append_message(session_id, "assistant", ai_message, user_id=user_id)
+        except ProviderNotConfigured:
+            raise  # 交给全局处理器 → 400 引导去「设置」配置
+        except (sqlite3.OperationalError, OSError) as exc:
+            logger.exception("简历面试启动：本地存储写入失败")
+            raise HTTPException(500, f"服务器存储异常(磁盘可能已满)，请联系管理员。{exc}")
+        except Exception as exc:
+            logger.exception("简历面试启动失败")
+            raise HTTPException(502, f"面试启动失败:模型或服务调用出错。{exc}")
+
         _graphs[session_id] = {
             "graph": graph,
             "config": config,
@@ -956,18 +971,38 @@ async def retry_review_generation(
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
 ):
+    """Re-run review generation for a session. Idempotent; works after restart.
+
+    Accepts sessions in ended / review_failed states. Refuses ongoing sessions
+    (user should call /interview/end first) and no-ops on already reviewed ones —
+    unless that session's profile extraction failed, which is allowed to re-run.
+    """
     session = get_session(session_id, user_id=user_id)
     if not session:
         raise HTTPException(404, "Session not found.")
-    if session.get("review") or session.get("status") == STATUS_REVIEWED:
-        return {"session_id": session_id, "mode": session["mode"], "status": "done"}
-    if session.get("status") == STATUS_REVIEWING:
+
+    status = session["status"]
+    mode = session["mode"]
+
+    if status == STATUS_REVIEWED:
+        # 复盘成功但画像提取失败的场次放行补跑,否则那场的画像洞察无法找回
+        if session.get("meta", {}).get("profile_extract_failed"):
+            return _dispatch_review(session_id, session, user_id, background_tasks)
+        _task_status[session_id] = {"status": "done", "type": _mode_task_type(mode)}
+        return {"session_id": session_id, "mode": mode, "status": "done"}
+    if status == STATUS_REVIEWING:
         task_status = _task_status.get(session_id)
         if task_status and task_status.get("user_id") not in (None, user_id):
             raise HTTPException(403, "Access denied.")
         if task_status and task_status.get("status") == "pending":
-            return {"session_id": session_id, "mode": session["mode"], "status": "pending"}
+            return {"session_id": session_id, "mode": mode, "status": "pending"}
+        # 进程重启后 reviewing 状态的任务已丢失，重新派发
         return _dispatch_review(session_id, session, user_id, background_tasks)
+    if status == STATUS_ONGOING:
+        raise HTTPException(400, "面试尚未结束，请先结束面试再生成复盘。")
+    if status not in (STATUS_ENDED, STATUS_REVIEW_FAILED):
+        raise HTTPException(400, f"当前状态 {status} 不支持重新生成复盘。")
+
     return _dispatch_review(session_id, session, user_id, background_tasks)
 
 
@@ -1056,9 +1091,7 @@ async def _update_drill_profile(
         new_weak_points=weak_points if weak_points is not None else overall.get("new_weak_points", []),
         new_strong_points=overall.get("new_strong_points", []),
         topic_mastery=mastery,
-        communication=overall.get("communication_observations", {}),
         user_id=user_id,
-        thinking_patterns=overall.get("thinking_patterns"),
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
         answer_count=len(scores),
@@ -1098,9 +1131,7 @@ async def _update_job_prep_profile(
         new_weak_points=overall.get("new_weak_points", []),
         new_strong_points=overall.get("new_strong_points", []),
         topic_mastery={},
-        communication=overall.get("communication_observations", {}),
         user_id=user_id,
-        thinking_patterns=overall.get("thinking_patterns"),
         session_summary=summary,
         avg_score=overall.get("avg_score"),
         answer_count=len(valid),
