@@ -92,18 +92,18 @@ export default function Login() {
               {isRegister && (
                 <div className="space-y-1.5">
                   <Label>昵称</Label>
-                  <Input type="text" placeholder="你的称呼（选填）" value={name} onChange={(e) => setName(e.target.value)} />
+                  <Input type="text" autoComplete="name" placeholder="你的称呼（选填）" value={name} onChange={(e) => setName(e.target.value)} />
                 </div>
               )}
 
               <div className="space-y-1.5">
                 <Label>邮箱</Label>
-                <Input type="email" placeholder="your@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                <Input type="email" autoComplete="username" placeholder="your@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
 
               <div className="space-y-1.5">
                 <Label>密码</Label>
-                <Input type="password" placeholder={isRegister ? "至少 6 个字符" : "输入密码"} value={password} onChange={(e) => setPassword(e.target.value)} required />
+                <Input type="password" autoComplete={isRegister ? "new-password" : "current-password"} placeholder={isRegister ? "至少 6 个字符" : "输入密码"} value={password} onChange={(e) => setPassword(e.target.value)} required />
               </div>
 
               {error && (
