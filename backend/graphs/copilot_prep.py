@@ -1,4 +1,4 @@
-"""Copilot Prep Phase — LangGraph 多 Agent 预处理流水线。
+"""Copilot Prep Phase — 多 Agent 预处理流水线。
 
 拓扑: fan-out(Company Researcher, JD Analyst, Fit Analyzer) → fan-in
       → HR Strategy Simulator → Risk Assessor → END
@@ -6,11 +6,9 @@
 import json
 import logging
 
-from langchain_core.messages import SystemMessage, HumanMessage
-
 from backend.config import settings
-from backend.indexer import query_resume
-from backend.llm_provider import get_copilot_llm
+from backend.indexer import load_resume_text
+from backend.llm_provider import HumanMessage, SystemMessage, get_copilot_llm
 from backend.memory import get_profile, get_profile_summary
 from backend.copilot.company_search import search_company
 from backend.copilot.prompts import (
@@ -45,9 +43,9 @@ async def _run_jd_analyst(jd_text: str) -> dict:
         HumanMessage(content=prompt),
     ])
     try:
-        return json.loads(_strip_markdown(resp.content))
+        return json.loads(_strip_markdown(resp))
     except json.JSONDecodeError:
-        logger.error(f"JD analysis parse failed: {resp.content[:300]}")
+        logger.error(f"JD analysis parse failed: {resp[:300]}")
         return {"role_title": "", "required_skills": [], "likely_question_dimensions": []}
 
 
@@ -56,13 +54,10 @@ async def _run_fit_analyzer(jd_text: str, user_id: str) -> dict:
     resume_context = "未上传简历"
     if _has_resume(user_id):
         try:
-            resume_context = str(query_resume(
-                "总结候选人的项目经历、技术栈、AI/后端/工程化相关实践",
-                user_id, top_k=4,
-            ))[:5000]
+            resume_context = load_resume_text(user_id)[:5000]
         except Exception as e:
-            logger.warning(f"Resume query failed: {e}")
-            resume_context = "简历检索失败"
+            logger.warning(f"Resume read failed: {e}")
+            resume_context = "简历读取失败"
 
     profile_summary = get_profile_summary(user_id)
     llm = get_copilot_llm()
@@ -76,9 +71,9 @@ async def _run_fit_analyzer(jd_text: str, user_id: str) -> dict:
         HumanMessage(content=prompt),
     ])
     try:
-        return json.loads(_strip_markdown(resp.content))
+        return json.loads(_strip_markdown(resp))
     except json.JSONDecodeError:
-        logger.error(f"Fit analysis parse failed: {resp.content[:300]}")
+        logger.error(f"Fit analysis parse failed: {resp[:300]}")
         return {"overall_fit": 0, "highlights": [], "gaps": [], "talking_points": []}
 
 
@@ -107,7 +102,7 @@ async def _run_hr_strategy(
         SystemMessage(content="你是面试策略引擎。只返回 JSON。"),
         HumanMessage(content=prompt),
     ])
-    return parse_strategy_tree(resp.content)
+    return parse_strategy_tree(resp)
 
 
 async def _run_risk_assessor(
@@ -143,10 +138,10 @@ async def _run_risk_assessor(
         HumanMessage(content=prompt),
     ])
     try:
-        result = json.loads(_strip_markdown(resp.content))
+        result = json.loads(_strip_markdown(resp))
         return result.get("risk_map", []), result.get("prep_hints", []), result.get("risk_summary", "")
     except json.JSONDecodeError:
-        logger.error(f"Risk assessment parse failed: {resp.content[:300]}")
+        logger.error(f"Risk assessment parse failed: {resp[:300]}")
         return [], [], ""
 
 
@@ -205,9 +200,7 @@ async def run_copilot_prep(
     resume_context = ""
     if _has_resume(user_id):
         try:
-            resume_context = str(query_resume(
-                "候选人基本信息和核心经历", user_id, top_k=2,
-            ))[:2000]
+            resume_context = load_resume_text(user_id)[:2000]
         except Exception:
             pass
 

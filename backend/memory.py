@@ -11,14 +11,15 @@ import json
 import logging
 import math
 import re
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.config import settings
-from backend.llm_provider import get_langchain_llm
+from backend.llm_provider import HumanMessage, SystemMessage, get_llm
 
 logger = logging.getLogger("uvicorn")
 
@@ -251,10 +252,38 @@ def _save_profile(profile: dict, user_id: str):
     path = _profile_path(user_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     profile["updated_at"] = datetime.now().isoformat()
-    path.write_text(
-        json.dumps(profile, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+
+    temp_path = None
+    try:
+        # 临时文件必须和目标文件位于同一目录，确保 os.replace 是原子的
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+
+            json.dump(
+                profile,
+                temp_file,
+                ensure_ascii=False,
+                indent=2,
+            )
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        # Windows 下必须先关闭临时文件，再替换目标文件
+        os.replace(temp_path, path)
+        temp_path = None  # 成功后置空
+
+    finally:
+        # 替换失败时清理临时文件；成功时文件已不存在
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _save_insight(mode: str, topic: str, summary: str, raw_extraction: dict, user_id: str):
@@ -1169,14 +1198,14 @@ async def llm_update_profile(
             new_strong="\n".join(new_strong_lines) or "暂无",
         )
 
-        llm = get_langchain_llm(user_id)
+        llm = get_llm(user_id)
         response = llm.invoke([
             SystemMessage(content="你是画像更新引擎。只返回 JSON。"),
             HumanMessage(content=prompt),
         ])
 
         try:
-            ops = _parse_json_safe(response.content)
+            ops = _parse_json_safe(response)
             if not isinstance(ops, dict):
                 raise ValueError(f"Expected dict, got {type(ops)}")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
@@ -1385,7 +1414,7 @@ async def extract_behavior_ops(transcript: str, user_id: str, mode: str, topic: 
         topic=topic or "综合",
         transcript=transcript,
     )
-    llm = get_langchain_llm(user_id)
+    llm = get_llm(user_id)
     # 解析失败重试一次,与知识轴提取的容错策略一致
     for attempt in range(2):
         response = llm.invoke([
@@ -1393,7 +1422,7 @@ async def extract_behavior_ops(transcript: str, user_id: str, mode: str, topic: 
             HumanMessage(content=prompt),
         ])
         try:
-            parsed = _parse_json_safe(response.content)
+            parsed = _parse_json_safe(response)
             ops = parsed.get("behavior_signals", []) if isinstance(parsed, dict) else []
             return ops if isinstance(ops, list) else []
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
@@ -1411,7 +1440,7 @@ async def update_profile_after_interview(
 ) -> dict:
     """Mem0-style two-stage pipeline: Extract → Update."""
     profile = _load_profile(user_id)
-    llm = get_langchain_llm(user_id)
+    llm = get_llm(user_id)
 
     canonical = _get_canonical_topic_keys(user_id)
     allowed_topics_str = "、".join(sorted(canonical)) if canonical else "（暂无）"
@@ -1419,11 +1448,10 @@ async def update_profile_after_interview(
     # ── Stage 1: Extract insights ──
     transcript_lines = []
     for msg in messages:
-        if hasattr(msg, "content"):
-            if isinstance(msg, HumanMessage):
-                transcript_lines.append(f"候选人: {msg.content}")
-            elif hasattr(msg, "content") and not isinstance(msg, SystemMessage):
-                transcript_lines.append(f"面试官: {msg.content}")
+        if msg.get("role") == "user":
+            transcript_lines.append(f"候选人: {msg.get('content', '')}")
+        elif msg.get("role") == "assistant":
+            transcript_lines.append(f"面试官: {msg.get('content', '')}")
 
     score_text = ""
     if scores:
@@ -1451,7 +1479,7 @@ async def update_profile_after_interview(
             HumanMessage(content=extract_msg),
         ])
         try:
-            parsed = _parse_json_safe(response.content)
+            parsed = _parse_json_safe(response)
             if isinstance(parsed, dict):
                 extraction = parsed
                 break
@@ -1752,21 +1780,21 @@ async def consolidate_patterns(user_id: str) -> dict:
             for i, (_, wp) in enumerate(active)
         )
 
-        llm = get_langchain_llm(user_id)
+        llm = get_llm(user_id)
         response = llm.invoke([
             SystemMessage(content="你是面试教练的模式识别引擎。只返回 JSON。宁可不产出,不要编造。"),
             HumanMessage(content=CONSOLIDATE_PROMPT.format(weak_points_formatted=formatted)),
         ])
 
         try:
-            parsed = _parse_json_safe(response.content)
+            parsed = _parse_json_safe(response)
             if not isinstance(parsed, dict):
                 raise ValueError(f"Expected dict, got {type(parsed)}")
             raw_patterns = parsed.get("patterns", []) or []
             if not isinstance(raw_patterns, list):
                 raise ValueError("patterns is not a list")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
-            logger.warning(f"Consolidation parse failed: {e}. Raw: {response.content[:200]}")
+            logger.warning(f"Consolidation parse failed: {e}. Raw: {response[:200]}")
             # 解析失败不更新 last_consolidation_at, 下次 session 会重试
             return {"ran": False, "applied": 0, "skipped": [], "reason": "llm_parse_failed"}
 

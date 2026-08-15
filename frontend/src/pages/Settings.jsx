@@ -34,7 +34,7 @@ import {
   enrollVoiceprint,
   deleteVoiceprintEnrollment,
 } from "../api/voiceprint";
-import { exportData, importData } from "../api/dataMigration";
+import { exportPersonalData, exportSystemData, importData } from "../api/dataMigration";
 import useAuth from "../hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -219,7 +219,8 @@ export default function Settings() {
   const scrollSpyLock = useRef(0);
 
   // 数据迁移状态
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState(null); // null | "personal" | "system"
+  const [includeSensitiveCredentials, setIncludeSensitiveCredentials] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importDbStrategy, setImportDbStrategy] = useState("skip");
   const [importOverwriteFiles, setImportOverwriteFiles] = useState(false);
@@ -435,18 +436,20 @@ export default function Settings() {
     }
   };
 
-  const handleExport = async () => {
-    setExporting(true);
+  const handleExport = async (kind) => {
+    setExporting(kind);
     setMigrationError("");
     setMigrationMessage("");
     try {
-      const { filename, size } = await exportData();
+      const { filename, size } = kind === "system"
+        ? await exportSystemData()
+        : await exportPersonalData(includeSensitiveCredentials);
       const sizeMb = (size / 1024 / 1024).toFixed(2);
       setMigrationMessage(`已下载 ${filename} (${sizeMb} MB)`);
     } catch (err) {
       setMigrationError("导出失败：" + (err.message || "未知错误"));
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
@@ -474,7 +477,7 @@ export default function Settings() {
         overwriteFiles: importOverwriteFiles,
       });
       setMigrationMessage(
-        `已导入：会话写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。建议刷新页面以加载新数据。`
+        `已导入：数据写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制或合并 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。个人画像已与本地画像合并，练习统计已按去重后的记录重新计算。向量索引未随备份迁移，请到 Embedding 设置中重建索引。`
       );
       setImportFile(null);
       setImportConfirming(false);
@@ -762,7 +765,7 @@ export default function Settings() {
               <span className="text-base font-semibold">Embedding 模型</span>
             </div>
             <div className="text-[13px] text-dim mb-6">
-              你自己的 Embedding，仅对你生效；用于题库 / 简历 / 知识库的向量化，必须配置。
+              你自己的 Embedding，仅对你生效；用于题库、知识库、个人资料库和记忆的向量化，必须配置。简历会直接读取全文，不使用 Embedding。
               <span className="text-amber-500/90">更换模型后请点下方「更新向量索引」重建（会清空并重算向量，历史会话记忆向量无法恢复）。</span>
             </div>
 
@@ -892,7 +895,7 @@ export default function Settings() {
               <div className="mt-6 flex items-start gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 text-[13px] text-amber-500/90">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                 <span>
-                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建简历 / 知识库 / 记忆向量；
+                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建知识库 / 个人资料库 / 记忆向量；
                   在重建前，相关检索结果会暂时为空。
                 </span>
               </div>
@@ -929,7 +932,7 @@ export default function Settings() {
                     </span>
                   ) : (
                     <span className="text-[12px] text-dim">
-                      更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
+                      更换 Embedding 模型并保存后，点此用新模型重建知识库 / 个人资料库 / 记忆向量
                     </span>
                   ))}
               </div>
@@ -1433,26 +1436,75 @@ export default function Settings() {
             </div>
             <div className="text-[13px] text-dim mb-5">
               {isAdmin
-                ? "管理员可导出整站全量备份；所有账户都可把单账户备份导入当前账户。全量备份包含数据库、用户文件和已保存的服务凭据，请妥善保管。"
-                : "可把单账户备份导入当前账户。归档中的会话和用户文件会重绑定到当前登录账户。"}
+                ? "每个账户都可导出或导入自己的数据；管理员还可导出整站全量备份。"
+                : "导出你的画像、训练记录、简历、知识库、个人资料和成长 Agent 对话，也可以把个人备份导入当前账户。"}
             </div>
 
             <div className="space-y-5">
-              {/* Export */}
+              {/* Personal export */}
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 space-y-3">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <div className="text-sm font-medium mb-0.5">导出我的数据</div>
+                    <div className="text-[12px] text-dim/70">
+                      包含画像、训练与错题、简历、知识库、上传文档和成长 Agent 对话
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={Boolean(exporting)}
+                    onClick={() => handleExport("personal")}
+                  >
+                    {exporting === "personal" ? (
+                      <Loader2 size={14} className="mr-1.5 animate-spin" />
+                    ) : (
+                      <Download size={14} className="mr-1.5" />
+                    )}
+                    {exporting === "personal" ? "导出中..." : "导出我的数据"}
+                  </Button>
+                </div>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={includeSensitiveCredentials}
+                    onChange={(event) => setIncludeSensitiveCredentials(event.target.checked)}
+                    className="mt-0.5 accent-primary"
+                  />
+                  <span>
+                    <span className="block text-[13px] text-text">包含敏感凭据</span>
+                    <span className="block text-[11px] leading-5 text-dim">
+                      包括 LLM / Embedding API Key、外部服务密钥和声纹凭据；默认不导出
+                    </span>
+                  </span>
+                </label>
+
+                <div className="text-[11px] leading-5 text-dim/80">
+                  向量索引属于可重建缓存，不进入备份。导入后请重新构建索引。
+                </div>
+              </div>
+
+              {/* Full-system export */}
               {isAdmin && (
               <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div>
                     <div className="text-sm font-medium mb-0.5">导出整站全量数据</div>
-                    <div className="text-[12px] text-dim/70">一次性打包全部账户和数据库为 .tar.gz</div>
+                    <div className="text-[12px] text-dim/70">
+                      管理员专用：打包全部账户、数据库、用户文件及已保存凭据
+                    </div>
                   </div>
-                  <Button variant="outline" disabled={exporting} onClick={handleExport}>
-                    {exporting ? (
+                  <Button
+                    variant="outline"
+                    disabled={Boolean(exporting)}
+                    onClick={() => handleExport("system")}
+                  >
+                    {exporting === "system" ? (
                       <Loader2 size={14} className="mr-1.5 animate-spin" />
                     ) : (
                       <Download size={14} className="mr-1.5" />
                     )}
-                    {exporting ? "导出中..." : "导出"}
+                    {exporting === "system" ? "导出中..." : "导出整站数据"}
                   </Button>
                 </div>
               </div>
@@ -1477,7 +1529,7 @@ export default function Settings() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label className={labelClass}>会话冲突策略</Label>
+                    <Label className={labelClass}>练习与对话记录冲突策略</Label>
                     <div className="flex gap-2">
                       {[
                         { value: "skip", label: "保留本地" },
@@ -1508,7 +1560,7 @@ export default function Settings() {
                         onChange={(e) => setImportOverwriteFiles(e.target.checked)}
                         className="accent-primary"
                       />
-                      <span className="text-[13px] text-dim">用归档文件覆盖本地</span>
+                      <span className="text-[13px] text-dim">用归档文件覆盖本地（个人画像始终安全合并）</span>
                     </label>
                   </div>
                 </div>
@@ -1519,8 +1571,8 @@ export default function Settings() {
                       <AlertTriangle size={14} className="text-amber-500 mt-0.5 shrink-0" />
                       <div className="text-[13px]">
                         将把 <span className="font-medium">{importFile?.name}</span> 合并到当前账户。
-                        {importDbStrategy === "overwrite" && "本地同 ID 的会话会被覆盖。"}
-                        {importOverwriteFiles && "用户文件也会被覆盖。"}
+                        {importDbStrategy === "overwrite" && "当前账户内同 ID 的数据会被覆盖。"}
+                        {importOverwriteFiles && "除个人画像外，其他同名用户文件会被覆盖。"}
                       </div>
                     </div>
                     <div className="flex gap-2">

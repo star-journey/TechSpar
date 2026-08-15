@@ -1,10 +1,9 @@
-"""Data models — LangGraph states (TypedDict) + API models (Pydantic)."""
+"""Data models — 会话状态 (TypedDict) + API models (Pydantic)."""
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal, TypedDict
+from typing import Literal, TypedDict
 from pydantic import BaseModel, Field
-from langgraph.graph import add_messages
 
 from backend.config import DEFAULT_API_EMBED_BATCH_SIZE
 
@@ -28,12 +27,13 @@ class InterviewPhase(str, Enum):
     END = "end"
 
 
-# ── LangGraph States (TypedDict for max compatibility) ──
+# ── 会话状态 (TypedDict, JSON 可序列化直接落盘) ──
 
 class ResumeInterviewState(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
+    messages: list[dict]  # OpenAI 格式 {role, content},仅 user/assistant
     phase: str           # InterviewPhase value
     target_role: str     # 候选人应聘岗位，注入 interviewer prompt
+    job_description: str # 本次目标岗位 JD，注入 interviewer prompt
     resume_context: str
     questions_asked: list[str]
     phase_question_count: int
@@ -43,7 +43,7 @@ class ResumeInterviewState(TypedDict, total=False):
 
 
 class TopicDrillState(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
+    messages: list[dict]
     topic: str
     topic_name: str
     knowledge_context: str
@@ -63,6 +63,7 @@ class StartInterviewRequest(BaseModel):
     num_questions: int | None = None
     divergence: int | None = None
     target_role: str | None = None  # resume 模式必填，缺省时回落到 profile.target_role
+    job_description: str | None = Field(default=None, max_length=12000)
 
 
 class JobPrepPreviewRequest(BaseModel):
@@ -79,6 +80,11 @@ class JobPrepStartRequest(JobPrepPreviewRequest):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+
+
+class PersonalAgentChatRequest(BaseModel):
+    conversation_id: str | None = None
+    message: str = Field(min_length=1, max_length=12000)
 
 
 class EndDrillRequest(BaseModel):

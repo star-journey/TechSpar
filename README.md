@@ -10,7 +10,6 @@
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Powered-1C3C3C.svg)](https://www.langchain.com/langgraph)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
 
@@ -101,7 +100,7 @@ TechSpar 要解决的不是“生成更多题”，而是把一次次训练、�
 
 #### 简历模拟面试
 
-AI 读取简历，通过 LangGraph 状态机推进完整流程：自我介绍 -> 技术问题 -> 项目深挖 -> 反问环节。
+AI 读取简历，通过内置状态机推进完整流程：自我介绍 -> 技术问题 -> 项目深挖 -> 反问环节。
 
 #### JD 定向备面
 
@@ -158,7 +157,7 @@ AI 读取简历，通过 LangGraph 状态机推进完整流程：自我介绍 ->
 cp .env.example .env
 ```
 
-`.env` 里**不放任何 API Key**——只有启动引导项（管理员账号、`JWT_SECRET`、是否开放注册等）。所有模型与服务密钥都是**每个用户自己的**，登录后在「设置」里填；首次登录会有两步引导带你配好 **LLM + Embedding**（Embedding 必需，简历 / 知识库 / 记忆的向量化都靠它）。
+`.env` 里**不放任何 API Key**——只有启动引导项（管理员账号、`JWT_SECRET`、是否开放注册等）。所有模型与服务密钥都是**每个用户自己的**，登录后在「设置」里填；首次登录会有两步引导带你配好 **LLM + Embedding**（Embedding 必需，用于知识库、个人资料库和记忆向量化；简历直接读取全文）。
 
 设置页里填什么：
 
@@ -302,7 +301,7 @@ http://localhost:5173/copilot
 
 | Component | Technology |
 | --- | --- |
-| Backend | FastAPI, LangChain, LangGraph |
+| Backend | FastAPI |
 | Frontend | React 19, React Router v7, Vite, Tailwind CSS v4 |
 | Storage | SQLite, semantic embeddings |
 | Auth | JWT, bcrypt |
@@ -340,7 +339,7 @@ python3 scripts/import_data.py techspar-backup-<timestamp>.tar.gz
 UI 导入会把归档中的数据全部归到当前登录账户（即使原 `user_id` 不同），适合个人换机；CLI 默认保留原 `user_id`，适合管理员级整库迁移。
 
 打包内容：`data/interviews.db` + `data/users/<user_id>/`（画像/简历/知识库/题库/训练偏好）。
-**不打包**：`.index_cache/`（导入后会自动重建）、`langgraph_checkpoints*`（运行时状态）、`.env`（只剩 `JWT_SECRET`/管理员账号等引导项，需手工同步；模型密钥已存在 `data/users/` 里随包迁移）。
+**不打包**：`.index_cache/`（导入后会自动重建）、`.env`（只剩 `JWT_SECRET`/管理员账号等引导项，需手工同步；模型密钥已存在 `data/users/` 里随包迁移）。
 
 可选参数：
 - `--user-id <id>`：仅导出指定用户（多用户部署时使用）
@@ -357,12 +356,18 @@ UI 导入会把归档中的数据全部归到当前登录账户（即使原 `use
 - **想动手改**：欢迎直接提 PR——修 bug、补文档、加功能、优化体验都可以。小改动直接发；改动比较大，建议先开个 Issue 对一下方向，免得白做。
 - 接入了新的模型 / 服务商、或者跑通了某个部署方式，也很欢迎回来分享一下，让后面的人少踩坑。
 
+开发环境、代码约定和 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ---
 
 ## License
 
 CC BY-NC 4.0
 
+例外:`frontend/src/resume/` 目录下的简历编辑与模板渲染代码移植自 [Magic Resume](https://github.com/JOYCEQL/magic-resume),保留其原始协议(Apache 2.0 + 附加商业限制条款),详见该目录下的 `LICENSE` 与 `README.md`。
+
 ## 致谢
 
 感谢 [LINUX DO](https://linux.do/) 社区的支持。
+
+简历管理模块基于 [Magic Resume](https://github.com/JOYCEQL/magic-resume) 移植,感谢原作者 [@JOYCEQL](https://github.com/JOYCEQL) 的出色工作。
