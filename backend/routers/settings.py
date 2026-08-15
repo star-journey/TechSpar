@@ -27,6 +27,7 @@ from backend.storage.user_settings import (
     save_user_provider,
     save_user_settings,
 )
+from backend.storage.system_settings import save_system_settings
 
 logger = logging.getLogger("uvicorn")
 
@@ -77,6 +78,7 @@ def put_user_settings(payload: SettingsResponse, user_id: str = Depends(get_curr
 
     # 仅 admin 能改全局账户开关；非 admin 的请求即便带了 system 字段也直接忽略。
     if is_admin_user(user_id):
+        save_system_settings(payload.system)
         settings.allow_registration = payload.system.allow_registration
 
     save_user_settings(payload.training, user_id)
@@ -125,7 +127,7 @@ def test_embedding_connection(payload: EmbeddingSettings, user_id: str = Depends
 
 @router.post("/settings/rebuild-index")
 def rebuild_index(user_id: str = Depends(get_current_user)):
-    """Re-embed the user's resume / knowledge bases / weak-point memory with their
+    """Re-embed the user's personal documents / knowledge bases / weak-point memory with their
     current embedding model. Streams SSE progress so the UI can show a determinate bar.
 
     Idempotent: clears stale vectors first. Best-effort per source — a missing/empty
@@ -137,21 +139,19 @@ def rebuild_index(user_id: str = Depends(get_current_user)):
 
     def event_stream():
         from backend.indexer import (
-            ingest_resume,
             ingest_topic,
             invalidate_user_embeddings,
             load_topics,
         )
         from backend.vector_memory import rebuild_index_from_profile
+        from backend.personal_agent import list_documents, reindex_all_documents
 
         try:
             topics = load_topics(user_id)  # {key: {name, dir, ...}}
-            resume_dir = settings.user_resume_path(user_id)
-            has_resume = resume_dir.exists() and any(p.is_file() for p in resume_dir.rglob("*"))
 
             plan = [("cleanup", "清理旧向量"), ("weak_points", "记忆 / 薄弱点")]
-            if has_resume:
-                plan.append(("resume", "简历"))
+            if list_documents(user_id):
+                plan.append(("personal_documents", "个人资料库"))
             for key, meta in topics.items():
                 plan.append((f"topic:{key}", f"知识库 · {meta.get('name', key)}"))
             total = len(plan)
@@ -160,7 +160,7 @@ def rebuild_index(user_id: str = Depends(get_current_user)):
             yield f"data: {json.dumps({'fatal': True, 'error': str(exc)})}\n\n"
             return
 
-        result = {"weak_points": False, "resume": False, "topics": []}
+        result = {"weak_points": False, "personal_documents": False, "topics": []}
         done = 0
 
         for key, label in plan:
@@ -171,9 +171,9 @@ def rebuild_index(user_id: str = Depends(get_current_user)):
                 elif key == "weak_points":
                     rebuild_index_from_profile(user_id)
                     result["weak_points"] = True
-                elif key == "resume":
-                    ingest_resume(user_id)
-                    result["resume"] = True
+                elif key == "personal_documents":
+                    reindex_all_documents(user_id)
+                    result["personal_documents"] = True
                 elif key.startswith("topic:"):
                     topic = key.split(":", 1)[1]
                     ingest_topic(topic, user_id)

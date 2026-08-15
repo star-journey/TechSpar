@@ -10,7 +10,10 @@ backends (esp. local HuggingFace models) are expensive, so they are cached per
 (user, config-signature) and rebuilt only when the signature changes.
 """
 
-from langchain_openai import ChatOpenAI
+import logging
+from collections.abc import AsyncIterator
+
+from openai import AsyncOpenAI, OpenAI
 
 from backend.config import (
     DEFAULT_API_EMBED_BATCH_SIZE,
@@ -26,6 +29,8 @@ from backend.user_context import get_current_user_id
 
 # user_key ("__global__" or user_id) → (signature, embed_instance)
 _embedding_cache: dict[str, tuple[str, object]] = {}
+
+logger = logging.getLogger("uvicorn")
 
 _DEFAULT_TEMPERATURE = 0.7
 _COPILOT_TEMPERATURE = 0.3  # Copilot 场景偏确定性
@@ -103,37 +108,76 @@ def _embedding_cache_sig(c: dict) -> str:
     )
 
 
+# ── 消息构造 ──
+# 统一 OpenAI 消息格式(纯 dict,可直接 JSON 序列化/入库)。构造一律经这三个
+# 助手,以后换供应商或扩展字段只改这里。
+
+def SystemMessage(content: str) -> dict:
+    return {"role": "system", "content": content}
+
+
+def HumanMessage(content: str) -> dict:
+    return {"role": "user", "content": content}
+
+
+def AIMessage(content: str) -> dict:
+    return {"role": "assistant", "content": content}
+
+
 # ── LLM ──
+
+class ChatLLM:
+    """OpenAI 兼容 Chat 客户端。messages 用上面的消息助手构造;
+    invoke/ainvoke 返回回复文本,astream 逐段产出增量文本。"""
+
+    def __init__(self, model: str, api_key: str, api_base: str, temperature: float):
+        self.model = model
+        self.temperature = temperature
+        self._api_key = api_key
+        self._api_base = api_base or None
+
+    def invoke(self, messages: list[dict]) -> str:
+        client = OpenAI(api_key=self._api_key, base_url=self._api_base)
+        resp = client.chat.completions.create(
+            model=self.model, messages=messages, temperature=self.temperature,
+        )
+        return resp.choices[0].message.content or ""
+
+    async def ainvoke(self, messages: list[dict]) -> str:
+        client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
+        resp = await client.chat.completions.create(
+            model=self.model, messages=messages, temperature=self.temperature,
+        )
+        return resp.choices[0].message.content or ""
+
+    async def astream(self, messages: list[dict]) -> AsyncIterator[str]:
+        client = AsyncOpenAI(api_key=self._api_key, base_url=self._api_base)
+        stream = await client.chat.completions.create(
+            model=self.model, messages=messages, temperature=self.temperature,
+            stream=True,
+        )
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
 
 def _require_llm(c: dict):
     if not c["api_key"] or not c["model"]:
         raise ProviderNotConfigured("LLM")
 
 
-def get_langchain_llm(user_id: str | None = None):
-    """LangChain ChatModel for LangGraph nodes (via OpenAI-compatible proxy)."""
+def get_llm(user_id: str | None = None) -> ChatLLM:
+    """当前用户的主 LLM。"""
     c = resolve_llm_config(user_id)
     _require_llm(c)
-    return ChatOpenAI(
-        model=c["model"],
-        api_key=c["api_key"],
-        base_url=c["api_base"],
-        temperature=c["temperature"],
-        streaming=True,
-    )
+    return ChatLLM(c["model"], c["api_key"], c["api_base"], c["temperature"])
 
 
-def get_copilot_llm(user_id: str | None = None, streaming: bool = False):
+def get_copilot_llm(user_id: str | None = None) -> ChatLLM:
     """Copilot uses the user's own main LLM (no separate Copilot provider)."""
     c = resolve_llm_config(user_id)
     _require_llm(c)
-    return ChatOpenAI(
-        model=c["model"],
-        api_key=c["api_key"],
-        base_url=c["api_base"],
-        temperature=_COPILOT_TEMPERATURE,
-        streaming=streaming,
-    )
+    return ChatLLM(c["model"], c["api_key"], c["api_base"], _COPILOT_TEMPERATURE)
 
 
 # ── Embedding ──
@@ -141,7 +185,14 @@ def get_copilot_llm(user_id: str | None = None, streaming: bool = False):
 class _APIEmbedding:
     """OpenAI-compatible embedding client. Exposes the minimal interface the rest of
     the codebase relies on (get_text_embedding / get_text_embedding_batch). Batches to
-    `batch_size` to respect per-request limits, which vary by provider."""
+    `batch_size` to respect per-request limits, which vary by provider.
+
+    Some otherwise OpenAI-compatible providers (notably ModelScope API-Inference)
+    accept only a scalar string for ``input``. Prefer efficient array requests, but
+    learn and remember a scalar-only capability after a 400 response and a successful
+    scalar retry. This also safely handles providers whose effective batch limit is
+    lower than the configured value.
+    """
 
     def __init__(self, model: str, api_key: str, api_base: str, batch_size: int):
         from openai import OpenAI
@@ -149,15 +200,53 @@ class _APIEmbedding:
         self._client = OpenAI(api_key=api_key, base_url=api_base or None)
         self._model = model
         self._batch = max(1, batch_size)
+        self._array_input_supported: bool | None = None
+
+    def _request(self, value: str | list[str], expected_count: int) -> list[list[float]]:
+        resp = self._client.embeddings.create(model=self._model, input=value)
+        data = list(resp.data)
+        if data and all(isinstance(getattr(item, "index", None), int) for item in data):
+            data.sort(key=lambda item: item.index)
+        vectors = [item.embedding for item in data]
+        if len(vectors) != expected_count:
+            raise RuntimeError(
+                f"Embedding provider returned {len(vectors)} vectors for "
+                f"{expected_count} inputs"
+            )
+        return vectors
 
     def get_text_embedding(self, text: str) -> list[float]:
-        return self.get_text_embedding_batch([text])[0]
+        # A scalar input is accepted by both the OpenAI API and scalar-only compatible
+        # providers, so single-text call sites do not need capability negotiation.
+        return self._request(text, 1)[0]
 
     def get_text_embedding_batch(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
         for i in range(0, len(texts), self._batch):
-            resp = self._client.embeddings.create(model=self._model, input=texts[i:i + self._batch])
-            out.extend(d.embedding for d in resp.data)
+            batch = texts[i:i + self._batch]
+            if self._array_input_supported is False:
+                out.extend(self._request(text, 1)[0] for text in batch)
+                continue
+
+            try:
+                out.extend(self._request(batch, len(batch)))
+                self._array_input_supported = True
+            except Exception as exc:
+                # Authentication, throttling and service failures must surface as-is.
+                # Only a provider-declared bad request can indicate an unsupported
+                # array shape or a stricter batch limit.
+                if getattr(exc, "status_code", None) != 400:
+                    raise
+
+                first = self._request(batch[0], 1)[0]
+                self._array_input_supported = False
+                logger.warning(
+                    "Embedding provider rejected array input; falling back to "
+                    "scalar requests for model %s.",
+                    self._model,
+                )
+                out.append(first)
+                out.extend(self._request(text, 1)[0] for text in batch[1:])
         return out
 
 
@@ -266,7 +355,9 @@ def probe_embedding(config: dict) -> None:
 
         client = OpenAI(api_key=config["api_key"], base_url=config["api_base"] or None,
                         timeout=20.0, max_retries=0)
-        client.embeddings.create(model=model_name, input=["ping"])
+        # Scalar input is the common denominator across OpenAI-compatible embedding
+        # services; runtime batch calls negotiate array support independently.
+        client.embeddings.create(model=model_name, input="ping")
         return
     _build_embedding(config).get_text_embedding("ping")
 
