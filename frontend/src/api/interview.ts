@@ -279,11 +279,13 @@ export async function getSessionState(
   return res.json();
 }
 
+// 注:下面两个端点是本分支新增,schema.d.ts 尚未重新生成(npm run gen:api),
+// 故先用显式类型,等 schema 更新后可换回 ApiResponse<...>。
 export async function saveAnswersDraft(
   sessionId: string,
   answers: unknown,
   currentIndex: number
-): Promise<ApiResponse<"/api/interview/session/{session_id}/answers", "put">> {
+): Promise<Record<string, unknown>> {
   const res = await authFetch(`${API_BASE}/interview/session/${sessionId}/answers`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -295,7 +297,7 @@ export async function saveAnswersDraft(
 
 export async function getInProgressSessions(
   mode: string | null = null
-): Promise<ApiResponse<"/api/interview/in-progress", "get">> {
+): Promise<Record<string, unknown>> {
   const params = new URLSearchParams();
   if (mode) params.set("mode", mode);
   const qs = params.toString();

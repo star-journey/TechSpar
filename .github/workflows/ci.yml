@@ -47,5 +47,8 @@ jobs:
       - name: 运行前端回归测试
         run: npm test
 
+      - name: 类型检查(tsc --noEmit:vite build 只剥类型不校验,漏掉的签名/属性不匹配靠这步拦)
+        run: npm run typecheck
+
       - name: 构建前端(vite build,拦语法错误/坏 import/漏装依赖)
         run: npm run build
