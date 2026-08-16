@@ -804,7 +804,9 @@ class ResumeInterviewContextTests(unittest.TestCase):
             patch.object(interview, "create_session") as create_session,
             patch.object(interview, "append_message"),
         ):
-            result = asyncio.run(interview.start_interview(request, user_id="user-a"))
+            result = asyncio.run(
+                interview.start_interview(request, BackgroundTasks(), user_id="user-a")
+            )
 
         self.assertEqual(captured["target_role"], "AI 应用开发工程师")
         self.assertEqual(captured["job_description"], job_description)
